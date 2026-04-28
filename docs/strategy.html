@@ -1,0 +1,1249 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>zigbee — strategy dossier</title>
+<style>
+  /* ---------- typography & palette ---------- */
+  :root {
+    --fg:        #1a1f2e;
+    --fg-soft:   #4a5266;
+    --fg-faint:  #7c8497;
+    --bg:        #fbfaf6;
+    --bg-soft:   #f1eee4;
+    --bg-card:   #ffffff;
+    --accent:    #2c5b88;
+    --accent-2:  #b76d1d;
+    --rule:      #e3ddd0;
+    --code-bg:   #f4f1e9;
+    --good:      #2a7a3f;
+    --warn:      #b76d1d;
+    --bad:       #ad2e2e;
+    --shadow:    0 1px 2px rgba(20,30,50,.04), 0 4px 12px rgba(20,30,50,.06);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --fg:       #e6e3da;
+      --fg-soft:  #b9b3a4;
+      --fg-faint: #807a6d;
+      --bg:       #1a1d23;
+      --bg-soft:  #14171c;
+      --bg-card:  #232730;
+      --accent:   #7eb1d6;
+      --accent-2: #d6a062;
+      --rule:     #2e333d;
+      --code-bg:  #14171c;
+      --good:     #6dbf86;
+      --warn:     #d6a062;
+      --bad:      #d97c7c;
+      --shadow:   0 1px 2px rgba(0,0,0,.3), 0 4px 12px rgba(0,0,0,.35);
+    }
+  }
+  *,*::before,*::after { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--fg);
+    font: 16px/1.65 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    text-rendering: optimizeLegibility;
+    -webkit-font-smoothing: antialiased;
+  }
+  /* ---------- layout: sidebar + main ---------- */
+  .layout {
+    display: grid;
+    grid-template-columns: 260px minmax(0, 760px);
+    gap: 56px;
+    max-width: 1100px;
+    margin: 0 auto;
+    padding: 48px 32px 96px;
+  }
+  @media (max-width: 880px) {
+    .layout { grid-template-columns: 1fr; gap: 24px; padding: 24px 18px 64px; }
+    nav.toc { position: static; padding-top: 0; }
+  }
+  /* ---------- nav (toc) ---------- */
+  nav.toc {
+    position: sticky;
+    top: 32px;
+    align-self: start;
+    font-size: 14px;
+    line-height: 1.55;
+    max-height: calc(100vh - 64px);
+    overflow-y: auto;
+    padding-right: 8px;
+  }
+  nav.toc h2 {
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--fg-faint);
+    margin: 0 0 12px;
+  }
+  nav.toc ol {
+    list-style: none;
+    padding: 0;
+    margin: 0 0 16px;
+    counter-reset: section;
+  }
+  nav.toc li {
+    counter-increment: section;
+    margin: 0;
+  }
+  nav.toc a {
+    display: block;
+    padding: 6px 0;
+    color: var(--fg-soft);
+    text-decoration: none;
+    border-left: 2px solid transparent;
+    padding-left: 12px;
+    margin-left: -12px;
+    transition: color .12s, border-color .12s;
+  }
+  nav.toc a::before {
+    content: counter(section) "  ";
+    color: var(--fg-faint);
+    font-variant-numeric: tabular-nums;
+    margin-right: 4px;
+  }
+  nav.toc a:hover,
+  nav.toc a.active {
+    color: var(--accent);
+    border-left-color: var(--accent);
+  }
+  /* ---------- main ---------- */
+  main { min-width: 0; }
+  header.cover {
+    margin-bottom: 56px;
+    padding-bottom: 24px;
+    border-bottom: 1px solid var(--rule);
+  }
+  header.cover .eyebrow {
+    font-size: 12px;
+    font-weight: 600;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    color: var(--accent-2);
+    margin-bottom: 12px;
+  }
+  header.cover h1 {
+    font-size: 36px;
+    line-height: 1.15;
+    font-weight: 700;
+    letter-spacing: -0.02em;
+    margin: 0 0 16px;
+    color: var(--fg);
+  }
+  header.cover p.lede {
+    font-size: 19px;
+    line-height: 1.5;
+    color: var(--fg-soft);
+    margin: 0 0 16px;
+    max-width: 60ch;
+  }
+  header.cover .meta {
+    font-size: 13px;
+    color: var(--fg-faint);
+    display: flex;
+    gap: 18px;
+    flex-wrap: wrap;
+  }
+  header.cover .meta b {
+    color: var(--fg-soft);
+    font-weight: 600;
+  }
+  /* ---------- section + headings ---------- */
+  section {
+    margin-bottom: 64px;
+    scroll-margin-top: 24px;
+  }
+  section > h2 {
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    color: var(--accent-2);
+    margin: 0 0 4px;
+  }
+  section > h3.section-title {
+    font-size: 26px;
+    line-height: 1.2;
+    font-weight: 700;
+    letter-spacing: -0.01em;
+    margin: 0 0 24px;
+    color: var(--fg);
+  }
+  h4 {
+    font-size: 17px;
+    font-weight: 600;
+    margin: 32px 0 12px;
+    color: var(--fg);
+  }
+  h5 {
+    font-size: 15px;
+    font-weight: 600;
+    margin: 24px 0 8px;
+    color: var(--fg);
+  }
+  /* ---------- prose ---------- */
+  p { margin: 0 0 16px; }
+  ul, ol { margin: 0 0 16px; padding-left: 22px; }
+  li { margin: 4px 0; }
+  ul.tight li, ol.tight li { margin: 1px 0; }
+  strong { font-weight: 600; color: var(--fg); }
+  em { font-style: italic; color: var(--fg-soft); }
+  a { color: var(--accent); text-decoration: none; border-bottom: 1px solid rgba(44,91,136,.25); }
+  a:hover { border-bottom-color: var(--accent); }
+  hr {
+    border: 0;
+    height: 1px;
+    background: var(--rule);
+    margin: 40px 0;
+  }
+  /* ---------- code ---------- */
+  code {
+    font: 13.5px/1.55 "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+    background: var(--code-bg);
+    color: var(--fg);
+    padding: 1px 5px;
+    border-radius: 3px;
+    word-break: break-word;
+  }
+  pre {
+    background: var(--code-bg);
+    border: 1px solid var(--rule);
+    border-radius: 6px;
+    padding: 14px 16px;
+    overflow-x: auto;
+    margin: 16px 0;
+    font: 13px/1.6 "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+  }
+  pre code { background: transparent; padding: 0; }
+  /* ---------- tables ---------- */
+  .table-wrap { overflow-x: auto; margin: 16px -2px 24px; }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 14px;
+    line-height: 1.5;
+  }
+  th, td {
+    text-align: left;
+    vertical-align: top;
+    padding: 10px 12px;
+    border-bottom: 1px solid var(--rule);
+  }
+  th {
+    font-weight: 600;
+    color: var(--fg);
+    background: var(--bg-soft);
+    border-bottom: 1.5px solid var(--rule);
+  }
+  td { color: var(--fg-soft); }
+  td strong { color: var(--fg); }
+  table.compact { font-size: 13px; }
+  table.compact th, table.compact td { padding: 8px 10px; }
+  /* ---------- callouts ---------- */
+  .callout {
+    background: var(--bg-card);
+    border: 1px solid var(--rule);
+    border-left: 3px solid var(--accent);
+    border-radius: 4px;
+    padding: 16px 20px;
+    margin: 24px 0;
+    box-shadow: var(--shadow);
+  }
+  .callout.warn { border-left-color: var(--warn); }
+  .callout.good { border-left-color: var(--good); }
+  .callout.bad  { border-left-color: var(--bad); }
+  .callout > :first-child { margin-top: 0; }
+  .callout > :last-child  { margin-bottom: 0; }
+  .callout .label {
+    display: inline-block;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--accent);
+    margin-bottom: 6px;
+  }
+  .callout.warn .label { color: var(--warn); }
+  .callout.good .label { color: var(--good); }
+  .callout.bad  .label { color: var(--bad); }
+  /* ---------- pills (verdict tags) ---------- */
+  .pill {
+    display: inline-block;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.05em;
+    padding: 2px 8px;
+    border-radius: 9999px;
+    vertical-align: 1px;
+  }
+  .pill.good { background: rgba(42,122,63,.13); color: var(--good); }
+  .pill.warn { background: rgba(183,109,29,.13); color: var(--warn); }
+  .pill.bad  { background: rgba(173,46,46,.13); color: var(--bad); }
+  .pill.neutral { background: var(--bg-soft); color: var(--fg-soft); }
+  /* ---------- footer ---------- */
+  footer.colophon {
+    margin-top: 80px;
+    padding-top: 24px;
+    border-top: 1px solid var(--rule);
+    font-size: 13px;
+    color: var(--fg-faint);
+  }
+  /* ---------- print ---------- */
+  @media print {
+    .layout { display: block; max-width: none; padding: 0; }
+    nav.toc { display: none; }
+    main { max-width: none; }
+    section { page-break-inside: avoid; }
+    pre, .callout { page-break-inside: avoid; }
+    a { color: inherit; border-bottom: none; }
+  }
+</style>
+</head>
+<body>
+<div class="layout">
+
+<nav class="toc" aria-label="Table of contents">
+  <h2>Strategy dossier</h2>
+  <ol>
+    <li><a href="#sec-binary">Binary footprint</a></li>
+    <li><a href="#sec-research">Three reference points</a></li>
+    <li><a href="#sec-constraints">zigbee's constraint surfaces</a></li>
+    <li><a href="#sec-options">Strategic options</a></li>
+    <li><a href="#sec-roadmap">Agreed roadmap</a></li>
+    <li><a href="#sec-chain">Chain integration model</a></li>
+    <li><a href="#sec-esp32">ESP32 walkthrough</a></li>
+    <li><a href="#sec-questions">Open questions</a></li>
+  </ol>
+</nav>
+
+<main>
+
+<header class="cover">
+  <div class="eyebrow">zigbee · strategy dossier</div>
+  <h1>What zigbee should be — and how it gets there</h1>
+  <p class="lede">
+    A consolidated record of the strategy conversation that followed
+    the 0.4 release and the binary-size discussion: research into
+    in-browser Bee clients, an inventory of what blocks zigbee from
+    embedded / wasm targets, the tradeoffs between a full Go-bee
+    rewrite and a small-footprint focus, and the four-milestone
+    roadmap we agreed on.
+  </p>
+  <div class="meta">
+    <span><b>Captured:</b> 2026-04-28</span>
+    <span><b>Repo:</b> github.com/martinconic/zigbee</span>
+    <span><b>Latest release:</b> v0.4.0</span>
+    <span><b>Tests:</b> 62 / 62</span>
+  </div>
+</header>
+
+<!-- ============================================================== -->
+<!-- 1. BINARY FOOTPRINT                                             -->
+<!-- ============================================================== -->
+<section id="sec-binary">
+  <h2>Section 1</h2>
+  <h3 class="section-title">Binary footprint — same source, four output sizes</h3>
+
+  <p>
+    The default <code>zig build</code> produces a <strong>23 MB Debug</strong>
+    binary. That's full DWARF debug info, no inlining, all safety
+    checks, no dead-code elimination — the right artifact for
+    development but absurd for distribution.
+  </p>
+
+  <p>
+    Switching to one of Zig's release modes via
+    <code>-Doptimize=…</code> changes the picture entirely:
+  </p>
+
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>Mode</th>
+          <th style="white-space:nowrap">Binary</th>
+          <th>What you get</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><code>Debug</code> <span class="pill neutral">default</span></td>
+          <td>~23 MB</td>
+          <td>Full debug symbols, all safety checks, no optimisation. Compiles fast, runs slowly. Dev only.</td>
+        </tr>
+        <tr>
+          <td><code>ReleaseSafe</code> <span class="pill good">recommended</span></td>
+          <td>~6 MB</td>
+          <td>-O3 with Zig's safety checks <strong>on</strong>. Hostile inputs crash loudly instead of silently corrupting. Right default for a network daemon.</td>
+        </tr>
+        <tr>
+          <td><code>ReleaseFast</code></td>
+          <td>~5.5 MB</td>
+          <td>-O3, safety checks off. Slightly faster; appropriate for benchmarks and trusted-data paths.</td>
+        </tr>
+        <tr>
+          <td><code>ReleaseSmall</code></td>
+          <td><strong>~1.4 MB</strong></td>
+          <td>-Os, aggressive dead-code elimination. The choice for embedded targets, wasm, low-bandwidth distribution.</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p>
+    All four pass the full test suite (<code>zig build test
+    -Doptimize=…</code>). Release-mode binaries are already stripped;
+    running <code>strip</code> on them saves nothing further.
+  </p>
+
+  <div class="callout">
+    <div class="label">Key insight</div>
+    <p>
+      The 16× shrink from Debug to ReleaseSmall isn't gimmicky — it's
+      the difference between "Linux-server only" and "fits on an ESP32
+      with room to spare". <code>ReleaseSmall</code> is what makes the
+      embedded and in-browser conversations even worth having.
+    </p>
+  </div>
+</section>
+
+<!-- ============================================================== -->
+<!-- 2. THREE REFERENCE POINTS                                       -->
+<!-- ============================================================== -->
+<section id="sec-research">
+  <h2>Section 2</h2>
+  <h3 class="section-title">Three reference points: how others have tried this</h3>
+
+  <p>
+    Before deciding what zigbee should target, we surveyed three
+    existing attempts at non-server Bee clients. Each one told us
+    something different about what works, what doesn't, and why.
+  </p>
+
+  <h4>2.1  vertex (Rust) — abandoned wasm scaffolding</h4>
+  <p>
+    Path: <code>/home/calin/work/swarm/bee-clients/vertex</code>.
+    Vertex is a multi-mode Rust Bee client (bootnode / client /
+    storer-not-yet) with 54 organised crates and Tokio + libp2p
+    underneath. It actually pushes <em>and</em> pulls; client mode
+    is a real read-write node.
+  </p>
+  <p>
+    What's relevant for us: vertex has two abandoned wasm crates
+    (<code>bin/wasm-playground/</code>,
+    <code>bin/swarm-wasm-lib/</code>) last touched mid-2023. Both are
+    thin wasm-bindgen wrappers around BMT primitives only — no
+    networking, no node, no protocol. The full client uses
+    <code>std::net</code> scattered throughout without conditional
+    compilation, so it cannot compile to wasm without major work.
+  </p>
+  <p class="callout warn">
+    <span class="label">Lesson</span>
+    Wrapping primitives (BMT, chunk hashes) in wasm-bindgen is the
+    easy part. Compiling a <em>full networking stack</em> to wasm is
+    where projects stall. Vertex is a useful negative example.
+  </p>
+
+  <h4>2.2  weeb-3 (Rust) — the working in-browser Bee client</h4>
+  <p>
+    Path: <code>/home/calin/work/swarm/bee-clients/weeb-3</code>.
+    <strong>This one works.</strong> ~10 K lines of Rust compiled via
+    <code>wasm-pack</code>, deployed at
+    <code>lat-murmeldjur.github.io/weeb_3</code>, npm package
+    <code>@lat-murmeldjur/weeb_3</code> published. Uploads,
+    downloads, integrates with MetaMask for stamp purchases. Live.
+  </p>
+
+  <p>Their architecture is the canonical "how to do this":</p>
+
+  <div class="table-wrap">
+    <table class="compact">
+      <thead>
+        <tr><th>Layer</th><th>weeb-3 choice</th><th>Why it works</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>Crypto</td>
+          <td><code>alloy</code> + <code>k256</code> (pure Rust secp256k1)</td>
+          <td>Sidesteps the libsecp256k1-to-wasm pain entirely. No FFI, no Emscripten.</td>
+        </tr>
+        <tr>
+          <td>Transport (browser)</td>
+          <td><code>libp2p</code> with <code>websocket-websys</code></td>
+          <td>Browser can't open TCP at all. Bee bootnodes already advertise <code>/ws/</code> multiaddrs.</td>
+        </tr>
+        <tr>
+          <td>Concurrency</td>
+          <td>Single-threaded async via <code>wasm-bindgen-futures</code></td>
+          <td>Browser wasm has no threads (without SharedArrayBuffer + COOP/COEP).</td>
+        </tr>
+        <tr>
+          <td>Storage</td>
+          <td><code>indexed_db_futures</code></td>
+          <td>Browser has no filesystem. IndexedDB is the persistent option.</td>
+        </tr>
+        <tr>
+          <td>Web integration</td>
+          <td>Service Worker proxies <code>swarm://</code> URL fetches</td>
+          <td>Lets static HTML in the browser pull assets through the wasm Bee.</td>
+        </tr>
+        <tr>
+          <td>Stamp purchase</td>
+          <td>Delegated to MetaMask via <code>window.ethereum</code></td>
+          <td>The wallet handles keys, gas, signing, broadcasting. weeb-3 just describes the tx.</td>
+        </tr>
+        <tr>
+          <td>Code split</td>
+          <td><code>[target.'cfg(target_arch = "wasm32")'.dependencies]</code></td>
+          <td>Two completely separate dep sets per target. ~99 % of the protocol logic is shared.</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p class="callout good">
+    <span class="label">Lesson</span>
+    weeb-3 is what an in-browser zigbee would conceptually look like —
+    protocol logic untouched, transport + concurrency + crypto swapped
+    out at the target boundary. The fact that it <em>shipped</em>
+    is the strongest signal we have that the wasm path is viable.
+  </p>
+
+  <h4>2.3  bee PR #5321 (Go) — full attempt, stalled</h4>
+  <p>
+    <a href="https://github.com/ethersphere/bee/pull/5321">github.com/ethersphere/bee/pull/5321</a>
+    is a draft PR (<code>[DO NOT MERGE]</code>, last updated Jan 2026,
+    no formal reviews). 28 commits, +8 514 / −2 528 lines across 41
+    files. Tries to compile the official Go bee codebase to wasm:
+  </p>
+  <ul class="tight">
+    <li>Replaces TCP/QUIC with WebSocket via a forked libp2p (<code>github.com/v1rtl/go-libp2p-wasmws</code>).</li>
+    <li>Replaces DNS with DoH for browser compatibility.</li>
+    <li>Splits files by build tag: <code>libp2p_js.go</code> / <code>libp2p_native.go</code>, <code>router_js.go</code>, <code>fs_js.go</code>, <code>node_js.go</code>.</li>
+    <li>Disables WebRTC, AutoNAT, TCP, native filesystem in wasm builds.</li>
+  </ul>
+  <p>
+    It got past compilation and stalled on filesystem abstraction +
+    version-compatibility bugs. Still draft. Never merged.
+  </p>
+
+  <p class="callout bad">
+    <span class="label">Lesson</span>
+    Even with Go's ecosystem and the official Bee codebase, retrofitting
+    wasm onto a 250 K-line native codebase is hard enough that it
+    stalls in draft. Weeb-3 succeeded where this didn't <em>because
+    weeb-3 was designed for browser from the start</em> (clean deps,
+    pure-Rust crypto, single-threaded async from day one). zigbee
+    today is in bee-PR-5321's situation, not weeb-3's.
+  </p>
+
+  <h4>What we take from these three</h4>
+  <ul>
+    <li><strong>Browser-friendly Bee clients are possible</strong> — weeb-3 proves it.</li>
+    <li><strong>The right architecture is platform-conditional dependencies</strong> from day one — not retrofit. Pure-language crypto, WebSocket transport, single-threaded async, JS FFI for browser-specific bits.</li>
+    <li><strong>Stamp purchase is delegated to the wallet</strong> in browser. We do not need to ship an Ethereum RPC client to push from a browser.</li>
+    <li><strong>Service Workers are how you make Swarm-hosted websites work</strong> end-to-end (a static HTML page rendering assets fetched from Swarm references).</li>
+  </ul>
+
+  <p style="font-size:13px;color:var(--fg-faint);margin-top:24px">
+    For the rest of this dossier we treat the canonical
+    <strong>Go bee</strong> as the standard — vertex, weeb-3, and
+    bee-PR-5321 are reference points only.
+  </p>
+</section>
+
+<!-- ============================================================== -->
+<!-- 3. ZIGBEE CONSTRAINT SURFACES                                   -->
+<!-- ============================================================== -->
+<section id="sec-constraints">
+  <h2>Section 3</h2>
+  <h3 class="section-title">What in zigbee blocks each target</h3>
+
+  <p>
+    Inventory of every place zigbee currently reaches outside pure-Zig
+    code. Numbers are call-site counts across the 27 modules.
+  </p>
+
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr><th>Surface</th><th>Sites</th><th>Where</th><th>Story per target</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><code>std.Thread</code> (spawn / Mutex / Condition)</td>
+          <td><strong>21</strong></td>
+          <td><code>p2p.zig</code>, <code>connection.zig</code>, <code>yamux.zig</code> (yamux reader, hive dialer, watchdog)</td>
+          <td><span class="pill bad">browser-critical</span> Browser can't spawn threads without <code>SharedArrayBuffer + COOP/COEP</code>; wasm32-wasi has no threading either. Means full async-state-machine rewrite of the I/O paths for any wasm target.</td>
+        </tr>
+        <tr>
+          <td>Vendored <code>libsecp256k1</code> (C)</td>
+          <td><strong>54</strong> + 6 in <code>build.zig</code></td>
+          <td><code>identity.zig</code>, <code>bzz_address.zig</code>, build linkage</td>
+          <td><span class="pill bad">non-native critical</span> Pre-built <code>.a</code> is x86-64. To target ARM/MCU/wasm we need to either (a) compile to wasm via Emscripten, (b) call out to JS like <code>noble-secp256k1</code>, or (c) cross-compile to ARM/Cortex-M. Pure-Zig secp256k1 doesn't exist at production quality.</td>
+        </tr>
+        <tr>
+          <td><code>std.net</code> (TCP)</td>
+          <td>7</td>
+          <td><code>connection.zig</code>, <code>noise.zig</code>, <code>dnsaddr.zig</code></td>
+          <td><span class="pill warn">replaceable</span> Browser has no TCP; must use WebSocket. MCU needs lwIP. ARM Linux: works as-is.</td>
+        </tr>
+        <tr>
+          <td><code>std.posix</code> (UDP for DNS)</td>
+          <td>6</td>
+          <td><code>dnsaddr.zig</code></td>
+          <td><span class="pill warn">replaceable</span> Browser: substitute DoH (<code>fetch()</code>). MCU: hardcode nameservers.</td>
+        </tr>
+        <tr>
+          <td><code>std.fs</code></td>
+          <td>3</td>
+          <td><code>dnsaddr.zig</code> (<code>/etc/resolv.conf</code>), <code>p2p.zig</code> (write chunk), <code>root.zig</code> (stdout)</td>
+          <td><span class="pill warn">replaceable</span> Browser: IndexedDB. MCU: SPIFFS / LittleFS / hardcode.</td>
+        </tr>
+        <tr>
+          <td><code>std.crypto</code></td>
+          <td>16</td>
+          <td>Noise, BMT, identity, peer-id, ping</td>
+          <td><span class="pill good">fine everywhere</span> All pure Zig (X25519, ChaCha20-Poly1305, SHA256, Keccak, ECDSA-P256, HKDF). No external dependencies.</td>
+        </tr>
+        <tr>
+          <td><code>std.heap.GeneralPurposeAllocator</code></td>
+          <td>1</td>
+          <td><code>main.zig</code></td>
+          <td><span class="pill good">fine wasm</span> Pure Zig. For MCU swap to a fixed-arena allocator.</td>
+        </tr>
+        <tr>
+          <td><code>std.process.argsAlloc</code></td>
+          <td>2</td>
+          <td><code>main.zig</code></td>
+          <td><span class="pill good">cli-only</span> Browser has no argv; affects entry point only, not the library. Use URL params or JS API.</td>
+        </tr>
+        <tr>
+          <td>Conditional compilation (<code>@import("builtin")</code>)</td>
+          <td><strong>0</strong></td>
+          <td>—</td>
+          <td><span class="pill warn">add when needed</span> No target gates today. Adding them is mechanical but pervasive once we start.</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h4>Difficulty by target</h4>
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr><th>Target</th><th>Verdict</th><th>Effort</th><th>Critical blocker</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>Embedded Linux ARM (Pi, BeagleBone)</td>
+          <td><span class="pill good">trivial</span></td>
+          <td>1–2 days</td>
+          <td>Just cross-compile libsecp256k1 for ARM.</td>
+        </tr>
+        <tr>
+          <td>Bare-metal MCU (ESP32, RP2040, STM32)</td>
+          <td><span class="pill warn">doable</span></td>
+          <td>2–4 weeks</td>
+          <td>RTOS + lwIP integration; cross-compile libsecp256k1 to bare-metal.</td>
+        </tr>
+        <tr>
+          <td>wasm32-wasi (Node.js, Wasmtime)</td>
+          <td><span class="pill warn">medium</span></td>
+          <td>1–2 weeks</td>
+          <td>Threads → async refactor; libsecp256k1 → JS FFI or Emscripten.</td>
+        </tr>
+        <tr>
+          <td>wasm32-freestanding (browser)</td>
+          <td><span class="pill bad">major rewrite</span></td>
+          <td>3–8 weeks</td>
+          <td>Threads, TCP, libsecp256k1 — all three need replacements; net effect is "Zig port of weeb-3".</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="callout">
+    <div class="label">Net read</div>
+    <p>
+      About <strong>5 000 of zigbee's 7 900 lines</strong> are pure
+      protocol logic (Noise, Yamux frames, multistream-select, bee
+      handshake, hive, retrieval, joiner, mantaray walker) that
+      compiles to wasm32 unchanged. The remaining ~3 000 lines
+      (transport + connection lifecycle + threading + DNS + secp256k1
+      calls + main.zig) is what gets a target-specific rewrite.
+    </p>
+  </div>
+</section>
+
+<!-- ============================================================== -->
+<!-- 4. STRATEGIC OPTIONS                                            -->
+<!-- ============================================================== -->
+<section id="sec-options">
+  <h2>Section 4</h2>
+  <h3 class="section-title">Three strategic options — and what Zig actually buys you</h3>
+
+  <h4>What Zig wins over Go (be honest)</h4>
+  <ul>
+    <li><strong>Memory:</strong> Go bee runs at ~500 MB – 2 GB RSS. Zig equivalent ~80–300 MB. <strong>~3–7×</strong> win.</li>
+    <li><strong>Binary size:</strong> Go bee ~50–80 MB. Zig <strong>1.4–6 MB</strong>. <strong>~10–50×</strong> win.</li>
+    <li><strong>Latency tail:</strong> No GC pauses. Matters for storers under SLO.</li>
+    <li><strong>Deployment surfaces Go can't reach:</strong> bare-metal MCU, freestanding wasm.</li>
+    <li><strong>Predictable allocations:</strong> every alloc is explicit. Easier security audit.</li>
+  </ul>
+
+  <h4>What Zig <em>doesn't</em> win meaningfully</h4>
+  <ul>
+    <li><strong>Throughput.</strong> Both within ~1.2× of each other for I/O-bound code. Bee is network-bound. ~1.1× moved chunks/sec.</li>
+    <li><strong>Feature velocity.</strong> Go has the mature ecosystem. A 2-person Zig team will not out-ship the Go bee team.</li>
+    <li><strong>Adoption / trust.</strong> Bee operators are conservative; they won't switch unless we offer something Go bee can't.</li>
+  </ul>
+
+  <hr>
+
+  <h4>Option A — Full Go-bee parity rewrite</h4>
+  <p>
+    <em>Pitch:</em> "The official Go client, but with 5× less RAM and 10× smaller binary."
+  </p>
+  <p>
+    Go bee is ~250–300 K Go lines, 7+ years of work. We're at ~7 900
+    lines, ~15–20 % of the surface area (boundary protocols + read +
+    manifest walking + bee-compatible read-only API). The remaining
+    80 % is storage, accounting, chain integration, redistribution.
+  </p>
+  <p>
+    <strong>Honest case:</strong> Years of work, zero novel
+    capability, perpetual catch-up against an actively-developed Go
+    upstream. The Bee team won't help if we have a bug. Operators
+    have no reason to switch unless they're idealogically motivated.
+  </p>
+  <div class="callout bad">
+    <span class="label">Verdict</span>
+    Bad ROI as primary scope. Don't aim for parity rewrite as the
+    headline goal. <em>But</em> — gradual progress toward parity is
+    an automatic side effect of doing the other options well.
+  </div>
+
+  <h4>Option B — Embedded focus (MCU + ARM Linux)</h4>
+  <p>
+    <em>Pitch:</em> "The first Bee client that runs on an ESP32 / Pi
+    Zero. Decentralized storage on every IoT device."
+  </p>
+  <p>
+    A 1.4 MB binary fits on an ESP32-S3 with room for application
+    code. RAM at ReleaseSmall is 5–20 MB which is borderline ESP32
+    (with PSRAM) but comfortable on Pi Zero W.
+  </p>
+  <p>
+    <strong>Concrete use cases:</strong>
+  </p>
+  <ul>
+    <li>IoT sensor uploads readings to Swarm (no central cloud).</li>
+    <li>Drones / robots fetch firmware updates from Swarm references.</li>
+    <li>Industrial / medical edge gateways needing verifiable storage.</li>
+    <li>Smart-home devices presenting Swarm content (digital photo frame, etc.).</li>
+  </ul>
+  <div class="callout good">
+    <span class="label">Verdict</span>
+    A unique offering — Go bee genuinely can't do this. Plays to
+    Zig's strengths exactly. Defensible niche, ship-able scope.
+  </div>
+
+  <h4>Option C — In-browser focus (wasm)</h4>
+  <p>
+    <em>Pitch:</em> "Swarm in any tab. No backend. No gateway."
+  </p>
+  <p>
+    Massive potential reach (every browser). Aligns with Swarm's
+    decentralized-web vision. Service Workers can intercept
+    <code>swarm://</code> URLs across the web.
+  </p>
+  <p>
+    <strong>Honest case:</strong> weeb-3 already does this. To beat
+    it, zigbee.wasm would need to be:
+  </p>
+  <ul class="tight">
+    <li>Smaller — likely yes (Zig has no runtime; weeb-3's bundle is ~3 MB; we could plausibly hit 1–1.5 MB).</li>
+    <li>Faster — likely a wash (WebSocket I/O is the bottleneck, not CPU).</li>
+    <li>Better DX — subjective.</li>
+  </ul>
+  <div class="callout warn">
+    <span class="label">Verdict</span>
+    Worth doing eventually, but you're entering an existing market.
+    Marginal-improvement play, not category-defining the way embedded
+    is.
+  </div>
+</section>
+
+<!-- ============================================================== -->
+<!-- 5. AGREED ROADMAP                                               -->
+<!-- ============================================================== -->
+<section id="sec-roadmap">
+  <h2>Section 5</h2>
+  <h3 class="section-title">The four-milestone roadmap</h3>
+
+  <p>
+    Don't pick one option — sequence them. The framing:
+    <em>zigbee is the small-footprint Bee client family. Read-only
+    today, write-capable tomorrow, deployable on any target Go can't
+    fit on.</em>
+  </p>
+
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr><th>Milestone</th><th>Tag</th><th>Focus</th><th>Effort</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><strong>0.5</strong></td>
+          <td>retrieval-maturity</td>
+          <td>SWAP cheques + SOC validation + encrypted refs + persistent identity + dead-conn pruning + basic local store</td>
+          <td>~2–3 months</td>
+        </tr>
+        <tr>
+          <td><strong>0.6</strong></td>
+          <td>push</td>
+          <td>postage stamp parser + issuer + <code>/swarm/pushsync/1.3.1</code> + upload API; accepts a batch credential as input</td>
+          <td>~3–4 months</td>
+        </tr>
+        <tr>
+          <td><strong>0.7</strong></td>
+          <td>embedded</td>
+          <td>ARM Linux first-class (release matrix); MCU spike (ESP32-S3) optional</td>
+          <td>~1–2 months</td>
+        </tr>
+        <tr>
+          <td><strong>0.8+</strong></td>
+          <td>browser</td>
+          <td>wasm32-freestanding via WebSocket; libsecp256k1 strategy decided; wallet-delegated stamp purchase</td>
+          <td>revisit after 0.7</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h4>0.5 — Retrieval maturity</h4>
+  <p>
+    The headline piece is <strong>SWAP</strong>: today bee disconnects
+    us with <code>apply debit: disconnect threshold exceeded</code>
+    after ~25–30 unpaid chunks per peer. The protocol is
+    <code>/swarm/swap/1.0.0/swap</code>; we issue cheques to bee peers
+    when our debt crosses a threshold. We can defer cashing cheques
+    on-chain entirely for this milestone — we only need to <em>issue</em>.
+  </p>
+  <ul class="tight">
+    <li>Cheque issuance + verification (existing secp256k1 + EIP-191).</li>
+    <li>SOC validation (close the chunk-validation gap; needed for feeds later).</li>
+    <li>Encrypted-chunk references (<code>refLength = 64</code>).</li>
+    <li>Persistent libp2p identity on disk.</li>
+    <li>Dead-connection pruning.</li>
+    <li>Basic flat-file chunk store (foundation for 0.6).</li>
+  </ul>
+
+  <h4>0.6 — Push capability</h4>
+  <p>
+    The clean separation: <strong>0.6 ships protocol-only push, no
+    chain integration.</strong> Users provide a postage <em>batch
+    credential</em> (id + signing key + metadata) acquired by some
+    other tool — bee, a stamp service, or a wallet. zigbee uses the
+    credential to <em>issue</em> stamps for chunks it pushes.
+  </p>
+  <ul class="tight">
+    <li>Postage stamp parser + verifier (we already have secp256k1).</li>
+    <li>Postage stamp <strong>issuer</strong> — sign chunk addresses against a loaded batch credential.</li>
+    <li>Bucket-index tracking (each batch has 2<sup>bucket_depth</sup> slots; we have to avoid reuse).</li>
+    <li><code>/swarm/pushsync/1.3.1/pushsync</code> initiator.</li>
+    <li>HTTP API: <code>POST /bytes</code>, <code>POST /bzz</code> (with manifest building).</li>
+  </ul>
+  <p>
+    What's <em>deferred</em> to 0.6.1 / 1.0:
+  </p>
+  <ul class="tight">
+    <li>Buying batches via Eth RPC (full chain integration).</li>
+    <li>Cashing cheques on-chain.</li>
+  </ul>
+
+  <h4>0.7 — Embedded</h4>
+  <ul class="tight">
+    <li>Cross-compile libsecp256k1 for <code>arm-linux-gnueabihf</code> and <code>aarch64-linux-gnu</code>.</li>
+    <li>Validate end-to-end on Raspberry Pi Zero W (most demanding target).</li>
+    <li>CI release matrix: x86_64 / armv7 / arm64 Linux static binaries.</li>
+    <li><strong>Optional MCU spike:</strong> ESP32-S3 with FreeRTOS + lwIP; cross-compile libsecp256k1 to Xtensa. Real work; do only if there's a use case.</li>
+  </ul>
+
+  <h4>0.8+ — In-browser (revisit)</h4>
+  <p>
+    After 0.7 ships, decide based on:
+  </p>
+  <ul class="tight">
+    <li>Did embedded validate real demand for non-server zigbee?</li>
+    <li>Has weeb-3 cornered the in-browser market by then, or is there room?</li>
+    <li>Have we decided libsecp256k1-vs-pure-Zig (which embedded MCU also forces us to confront)?</li>
+  </ul>
+  <p>
+    If we go ahead, the work is: transport abstraction (TcpTransport
+    vs WebSocketTransport), single-threaded async event loop, JS FFI
+    for browser APIs, Service Worker bridge.
+  </p>
+
+  <div class="callout">
+    <div class="label">Critical observation</div>
+    <p>
+      The 5 000 lines of pure protocol logic (Noise, Yamux,
+      multistream-select, bee handshake, hive, retrieval, joiner,
+      mantaray) are <strong>shared across every milestone and every
+      target</strong>. Only the ~3 000 lines of transport / threading
+      / fs / crypto adapters change per target. Designing for that
+      split is the actual architectural work; the protocol code is
+      already done.
+    </p>
+  </div>
+</section>
+
+<!-- ============================================================== -->
+<!-- 6. CHAIN INTEGRATION MODEL                                      -->
+<!-- ============================================================== -->
+<section id="sec-chain">
+  <h2>Section 6</h2>
+  <h3 class="section-title">Chain integration as an outer ring, not a core</h3>
+
+  <p>
+    Three places where Bee touches Ethereum:
+  </p>
+  <ol>
+    <li><strong>Buy postage stamps</strong> — call <code>PostageStampContract.createBatch(...)</code>, costs gas + BZZ.</li>
+    <li><strong>Cash SWAP cheques</strong> — call <code>Chequebook.cashCheque(...)</code>, costs gas.</li>
+    <li><strong>Read-only RPC calls</strong> — query stamp validity, contract state. No gas.</li>
+  </ol>
+
+  <p>
+    The right architecture is to <strong>treat chain integration as
+    an outer ring around zigbee, not part of zigbee itself</strong>.
+    The core stays small and target-portable; chain code is an
+    optional adapter layered per target.
+  </p>
+
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr><th>Sub-task</th><th>Server</th><th>Browser</th><th>Embedded MCU</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>Manage a private key</td>
+          <td>We sign keys, store, protect</td>
+          <td><strong class="pill good">free</strong> — wallet has the keys</td>
+          <td>Real key-management problem</td>
+        </tr>
+        <tr>
+          <td>Hold ETH (gas) and BZZ</td>
+          <td>Operator's responsibility</td>
+          <td><strong class="pill good">free</strong> — user's wallet</td>
+          <td>Prepaid balance or external funder</td>
+        </tr>
+        <tr>
+          <td>Build &amp; sign tx</td>
+          <td>Eth RPC client + secp256k1 + RLP encoding (~5 K lines)</td>
+          <td><strong class="pill good">free</strong> — wallet builds &amp; signs</td>
+          <td>Same as server-side, on tiny hardware</td>
+        </tr>
+        <tr>
+          <td>Broadcast tx</td>
+          <td>Connect to RPC endpoint (Infura, etc.)</td>
+          <td><strong class="pill good">free</strong> — wallet broadcasts</td>
+          <td>RPC over HTTPS — feasible but adds TLS</td>
+        </tr>
+        <tr>
+          <td>Encode contract calldata</td>
+          <td>Need an ABI encoder</td>
+          <td>Tens of lines — describe the call to the wallet</td>
+          <td>Same as server-side</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p class="callout">
+    <span class="label">Counterintuitive insight</span>
+    <strong>The browser is the easiest place to do stamp purchase</strong>,
+    not the hardest. MetaMask handles keys, gas, signing, broadcasting,
+    and the UX. We just describe what tx to construct. weeb-3
+    proves this pattern works.
+  </p>
+
+  <h4>Per-target story</h4>
+
+  <h5>Browser (0.8) — wallet bridge</h5>
+  <ul class="tight">
+    <li>Read state: <code>window.ethereum.request({method: 'eth_call', params: [...]})</code>.</li>
+    <li>Buy stamp: encode <code>createBatch(...)</code> calldata, call <code>eth_sendTransaction</code>, wait for receipt.</li>
+    <li>Cheque cashing: same pattern.</li>
+    <li>~few hundred lines of JS FFI; key handling, gas estimation, popup UX → wallet's job.</li>
+  </ul>
+
+  <h5>Server (1.0) — own RPC client</h5>
+  <ul class="tight">
+    <li>Full Ethereum RPC client in Zig.</li>
+    <li>Key management on disk (encrypted keystore).</li>
+    <li>Postage / chequebook contract bindings.</li>
+    <li>~5–10 K lines of Zig. Real chunk of work; this is the "approaches Go-bee parity" milestone.</li>
+  </ul>
+
+  <h5>Embedded — stay external</h5>
+  <ul class="tight">
+    <li>No on-device chain integration.</li>
+    <li>Use pre-flashed batch credentials, or fetch credentials from a backend stamp service.</li>
+    <li>Device signs stamps locally (one secp256k1 sign per chunk — cheap, fast).</li>
+    <li>Never broadcasts a transaction.</li>
+  </ul>
+
+  <div class="callout good">
+    <span class="label">Net effect</span>
+    Chain integration <strong>never blocks any of 0.5 / 0.6 / 0.7</strong>.
+    It becomes a target-specific add-on: browser gets it via wallet
+    (cheap), server gets it via Eth RPC (expensive — defer to 1.0),
+    embedded skips it (correct by use-case design).
+  </div>
+</section>
+
+<!-- ============================================================== -->
+<!-- 7. ESP32 WALKTHROUGH                                            -->
+<!-- ============================================================== -->
+<section id="sec-esp32">
+  <h2>Section 7</h2>
+  <h3 class="section-title">Concrete example — pushing from an ESP32</h3>
+
+  <p>
+    The pushsync wire format is, per chunk, <code>Delivery {
+    address, data, stamp }</code>. The <strong>stamp</strong> is a
+    <code>secp256k1_sign(batch_private_key, …)</code> over the chunk
+    address plus batch metadata. The receiving bee verifies that
+    signature against the batch owner's address recorded on-chain.
+  </p>
+
+  <p class="callout good">
+    <span class="label">Key fact</span>
+    Issuing a stamp is a <strong>free off-chain operation</strong>:
+    one secp256k1 signature per chunk. No RPC call, no gas, no
+    transaction. The on-chain cost (BZZ + gas) is paid <em>once</em>,
+    at batch-creation time, by whoever funded the batch.
+    <strong>The device pushing chunks never touches Ethereum.</strong>
+  </p>
+
+  <p>So an ESP32 needs three things to push:</p>
+  <ol>
+    <li><strong>Batch ID</strong> (32 bytes — public).</li>
+    <li><strong>Batch's private signing key</strong> (32 bytes — must stay secret on the device).</li>
+    <li><strong>Batch metadata</strong> (depth, bucket_depth, validity window).</li>
+  </ol>
+
+  <h4>Three provisioning patterns</h4>
+
+  <h5>A — Pre-flash a long-life batch into NVS at deploy time</h5>
+  <pre><code>At build / deploy time, on a laptop with bee:
+   1. Buy a batch with bee:  POST /stamps/&lt;amount&gt;/&lt;depth&gt; → returns batch_id
+   2. Export the batch's signing key + metadata to a small blob.
+   3. Flash that blob into the ESP32's NVS / SPIFFS partition.
+
+On the device, every push:
+   1. Hash data → chunk addresses (BMT, already in zigbee)
+   2. For each chunk: zigbee.signStamp(batch, chunk_addr) — local secp256k1
+   3. pushsync.send(closest_peer, Delivery { addr, data, stamp })
+   4. Verify Receipt</code></pre>
+  <p>
+    A depth-22 batch costs ~$5–15 mainnet, signs ~4 M stamps, lasts
+    months. Plenty for a sensor uploading every 10 minutes for a
+    year.
+  </p>
+
+  <h5>B — Backend stamp service</h5>
+  <p>
+    For higher-throughput devices (cameras, drones, multi-tenant
+    fleets):
+  </p>
+  <pre><code>ESP32 boots → connects to backend HTTPS → POST /provision { device_id }
+   ← { batch_id, key, depth, valid_until } (TLS-encrypted)
+ESP32 caches credential in flash, uses until expiry, refreshes.</code></pre>
+  <p>
+    The backend holds the batches, possibly buys new ones as they
+    expire — <em>that's</em> where chain integration lives, on the
+    backend, not the device. Standard IoT-to-cloud auth patterns
+    apply (mTLS, device certificates).
+  </p>
+
+  <h5>C — Stamp-on-demand (per-chunk RPC)</h5>
+  <p>
+    Useful when you don't want the batch key on the device at all
+    (defence-in-depth):
+  </p>
+  <pre><code>For each chunk: device → backend POST /sign { chunk_address }
+                       ← { stamp_signature, batch_id, bucket_index }
+device.pushsync.send(peer, Delivery{ addr, data, stamp })</code></pre>
+  <p>
+    Adds a network round-trip per chunk; OK at low rates, kills
+    throughput for video. Real benefit: device compromise doesn't
+    compromise the batch.
+  </p>
+
+  <h4>Worked example: temperature sensor uploading every 10 minutes</h4>
+  <pre><code>Batch:        depth=22, bucket-depth=16, TTL ≈ 12 months  (one-time buy: ~$10 mainnet)
+Chunks/year:  144 readings/day × 365  ≈  52 600  (each reading = 1 chunk; small)
+Stamp use:    ~52 600 over the year
+Capacity:     2^22 × 2^16 = 2.7 × 10^11  → vastly oversized, can host thousands of devices
+Per-chunk:    1 secp256k1 sign (~5 ms on ESP32) + handshake reuse + 1 pushsync round-trip
+Memory:       zigbee ReleaseSmall ~1.4 MB code + ~8 KB per chunk RAM
+Network:      idle most of the time; pushes a single chunk every 10 min
+On-chain:     never. Funding event happened once on a laptop.</code></pre>
+
+  <p>
+    The device pushes happily for a year on one batch. When the batch
+    nears expiry an OTA update or backend round-trip refreshes the
+    credential. <strong>The device never touches a chain RPC, never
+    holds ETH, never broadcasts a transaction.</strong>
+  </p>
+
+  <h4>Small reframing of the 0.6 design</h4>
+  <p>
+    The ESP32 case clarifies that 0.6 needs to be slightly more than
+    "accept stamps from outside" — it needs a stamp <strong>issuer</strong>,
+    not just a parser/verifier:
+  </p>
+  <div class="table-wrap">
+    <table class="compact">
+      <thead><tr><th>Component</th><th>What it does</th><th>New code?</th></tr></thead>
+      <tbody>
+        <tr>
+          <td>Postage batch loader</td>
+          <td>Read <code>{batch_id, key, depth, valid_until}</code> from a blob/file/env var</td>
+          <td>~100 lines</td>
+        </tr>
+        <tr>
+          <td>Stamp issuer</td>
+          <td><code>signStamp(batch, chunk_addr, bucket_idx)</code> → 65-byte sig</td>
+          <td>Trivial — uses existing <code>identity.signEthereum</code></td>
+        </tr>
+        <tr>
+          <td>Stamp verifier</td>
+          <td>Recover address from sig, check against batch owner</td>
+          <td>Trivial — uses existing <code>identity.recoverEthereum</code></td>
+        </tr>
+        <tr>
+          <td>Bucket-index tracking</td>
+          <td>Avoid reuse within a bucket</td>
+          <td>~150 lines + persistence</td>
+        </tr>
+        <tr>
+          <td><code>/swarm/pushsync/1.3.1/pushsync</code></td>
+          <td>Wire protocol: Delivery → Receipt</td>
+          <td>~300 lines</td>
+        </tr>
+        <tr>
+          <td>HTTP API</td>
+          <td><code>POST /bytes</code>, <code>POST /bzz</code> (with manifest building)</td>
+          <td>Existing pattern (~400 lines)</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<!-- ============================================================== -->
+<!-- 8. OPEN QUESTIONS                                               -->
+<!-- ============================================================== -->
+<section id="sec-questions">
+  <h2>Section 8</h2>
+  <h3 class="section-title">Open questions before each milestone</h3>
+
+  <h4>For 0.5 (retrieval maturity) — small scope decisions</h4>
+  <ul>
+    <li>Do we cash any received SWAP cheques on-chain in 0.5, or strictly defer to 1.0?
+      <em>(Recommendation: defer.)</em></li>
+    <li>How aggressive is the local store? Just an LRU cache, or a real persistent store with sweep / eviction?
+      <em>(Recommendation: minimal LRU; durability is 0.6/0.7 work.)</em></li>
+    <li>Are we OK with bucket-index reuse in the issuer until 0.6 needs it strict?</li>
+  </ul>
+
+  <h4>For 0.6 (push) — credential UX decisions</h4>
+  <ul>
+    <li>How is the batch credential supplied — JSON file, environment variable, HTTP endpoint, all of the above?</li>
+    <li>Do we generate the batch's signing key client-side (zigbee never sees the funded key), or accept it directly?
+      <em>(The former is more secure; the latter is simpler.)</em></li>
+    <li>Pushsync receipt verification: do we cryptographically verify the receipt's signature, or trust the protocol?</li>
+  </ul>
+
+  <h4>For 0.7 (embedded) — target choices</h4>
+  <ul>
+    <li>Which MCU first if we do the spike? ESP32-S3 (PSRAM, Wi-Fi/BT built in) is the easiest answer, but RP2040 is more "open hardware".</li>
+    <li>FreeRTOS or Zephyr for the RTOS layer? <em>(FreeRTOS is what ESP-IDF wants; Zephyr is more portable.)</em></li>
+    <li>Is the use-case real enough to justify 3–4 weeks of MCU work, or do we ship ARM Linux only and revisit MCU when there's a customer?</li>
+  </ul>
+
+  <h4>For 0.8 (browser) — strategic decisions</h4>
+  <ul>
+    <li>Pure-Zig secp256k1 (a multi-week project of its own), Emscripten-compiled libsecp256k1, or JS FFI to <code>noble-secp256k1</code>?
+      <em>(JS FFI is fastest; pure-Zig is best long-term.)</em></li>
+    <li>Service Worker integration in v1, or strictly the wasm + SDK in v1 with Service Worker in v2?</li>
+    <li>Do we ship our own demo UI (like weeb-3 does) or focus on the SDK and let dApps build their own?</li>
+  </ul>
+
+  <h4>The bigger strategic forks (revisit periodically)</h4>
+  <ul>
+    <li><strong>Who's the ideal user in 2 years?</strong> An IoT developer, a dApp author, a Bee operator? The answer changes the priority order.</li>
+    <li><strong>Funding / team scale?</strong> Solo developer can ship the read-only matrix (Linux/ARM/MCU/browser) in 12–18 months. A team could attempt full Go-bee parity.</li>
+    <li><strong>What does "Swarm adoption" look like to you?</strong> Every dApp consuming Swarm in the browser → prioritise wasm. Every IoT device storing telemetry → prioritise embedded. More independent operators → prioritise full-node parity.</li>
+  </ul>
+</section>
+
+<!-- ============================================================== -->
+<!-- COLOPHON                                                        -->
+<!-- ============================================================== -->
+<footer class="colophon">
+  <p>
+    Captured 2026-04-28 from the strategy conversation that followed
+    the zigbee 0.4 release. Source-of-truth references:
+    <a href="../STATUS.md">STATUS.md</a> (operational snapshot,
+    has the resumption checkpoint),
+    <a href="../PLAN.md">PLAN.md</a> (multi-phase roadmap),
+    <a href="../README.md">README.md</a>,
+    <a href="../USAGE.md">USAGE.md</a>,
+    <a href="../ARCHITECTURE.md">ARCHITECTURE.md</a>.
+  </p>
+  <p>
+    This page is single-file and self-contained; no external CSS, no
+    JS, no fonts. Print-friendly.
+  </p>
+</footer>
+
+</main>
+</div>
+
+<script>
+  // Tiny progressive enhancement: highlight the active TOC entry.
+  // No-JS users get all the same content with no degradation.
+  (function () {
+    var sections = document.querySelectorAll('section[id]');
+    var links = document.querySelectorAll('nav.toc a');
+    function onScroll() {
+      var pos = window.scrollY + 120;
+      var current = null;
+      sections.forEach(function (sec) {
+        if (sec.offsetTop <= pos) current = sec.id;
+      });
+      links.forEach(function (a) {
+        a.classList.toggle('active', a.getAttribute('href') === '#' + current);
+      });
+    }
+    document.addEventListener('scroll', onScroll, { passive: true });
+    onScroll();
+  })();
+</script>
+
+</body>
+</html>
