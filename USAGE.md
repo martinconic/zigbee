@@ -36,9 +36,12 @@ uploaded via `bee /bytes`. You want the bytes back. You don't run a
 bee yourself.
 
 ```bash
-# Build
+# Build (Debug — fine for trying it out)
 cd /path/to/zigbee
 zig build
+# For a production daemon, prefer:
+#   zig build -Doptimize=ReleaseSafe   (~6 MB, safety checks on)
+# See "Build modes" below or in README.md.
 
 # Start the daemon. --peer is the bootstrap entry — any TCP-reachable
 # bee will do. This one is the public Sepolia testnet bootnode.
@@ -216,7 +219,37 @@ Use a `/ip4/.../tcp/...` entry (raw TCP, no `/ws/`) and start the daemon:
 
 ---
 
-## 6. HTTP API reference
+## 6. Build modes
+
+Same source tree, four output sizes. Pick by deployment context:
+
+| Command | Binary | Notes |
+|---|---|---|
+| `zig build` | ~23 MB | **Debug** — full symbols + safety checks. Compiles fast, runs slowly. Use during development. |
+| `zig build -Doptimize=ReleaseSafe` | ~6 MB | -O3 with Zig's safety checks **on** (bounds, integer overflow, null-deref). **Recommended for production daemons** — hostile inputs crash loudly instead of corrupting state. |
+| `zig build -Doptimize=ReleaseFast` | ~5.5 MB | -O3, safety checks **off**. Slightly faster than ReleaseSafe; the right pick for **benchmarks** and for environments where you accept the safety-net tradeoff for raw throughput. |
+| `zig build -Doptimize=ReleaseSmall` | **~1.4 MB** | -Os, safety checks off, aggressive dead-code elimination. **Smallest output** — the choice for embedded targets, tight-bandwidth distribution, container images, and (planned) wasm32-freestanding for in-browser use. |
+
+All four pass the full 62-test suite (`zig build test -Doptimize=…`).
+Release-mode binaries are already stripped; running `strip` afterwards
+saves nothing.
+
+```bash
+# Recommended production:
+zig build -Doptimize=ReleaseSafe
+ls -lh zig-out/bin/zigbee   # → ~6 MB
+
+# Smallest:
+zig build -Doptimize=ReleaseSmall
+ls -lh zig-out/bin/zigbee   # → ~1.4 MB
+```
+
+The binary is statically linked against vendored `libsecp256k1`
+(`vendor/secp256k1/`). The only dynamic dependency is libc.
+
+---
+
+## 7. HTTP API reference
 
 Once the daemon is running on `127.0.0.1:<api-port>` (default 9090),
 the surface is **bee-compatible** for read-only operations: existing bee
@@ -256,7 +289,7 @@ HTTP status codes:
 
 ---
 
-## 7. Operational notes
+## 8. Operational notes
 
 - **First retrieval after daemon start may take a few seconds** while
   the auto-dialer is still fanning out. After ~30 s the connections

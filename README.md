@@ -178,18 +178,36 @@ and link `libsecp256k1`).
 
 ```bash
 cd zigbee
-zig build           # builds zig-out/bin/zigbee in Debug
-zig build -Doptimize=ReleaseFast   # faster, larger
-zig build test      # 53/53
+zig build           # development default: Debug
+zig build test      # 62/62
 ```
 
-You can also point the build at a different libsecp256k1 install — see
-`build.zig` for include and library paths. The default is the
-`vendor/secp256k1/` tree we ship.
+### Release modes
 
-The binary is statically linked against libsecp256k1 and is a single
-~18MB Debug / smaller Release executable. The only runtime dependency
-is libc.
+Zig exposes its standard optimisation modes via `-Doptimize=…`. All four
+build the same `zig-out/bin/zigbee` and pass the full test suite. Pick
+the one that matches how you're using zigbee:
+
+| Mode | Binary | When to pick it |
+|---|---|---|
+| `Debug` (default) | ~23 MB | Development. Full debug symbols, all safety checks, no optimisation. Compiles fast, runs slowly. |
+| `ReleaseSafe` | ~6 MB | **Recommended for production daemons.** -O3 with Zig's safety checks left on (bounds, integer overflow, null-deref). Hostile inputs crash loudly instead of silently corrupting state. |
+| `ReleaseFast` | ~5.5 MB | Speed-first. -O3, **safety checks off**. Slightly faster than ReleaseSafe at the cost of giving up the safety net — appropriate when zigbee is the sole consumer of trusted data, or in benchmarks. |
+| `ReleaseSmall` | **~1.4 MB** | Size-first. -Os, safety checks off, aggressive dead-code elimination. The right choice for embedded targets, low-bandwidth distribution, or any "every MB matters" deployment. (Future: in-browser via wasm32-freestanding will likely use this.) |
+
+```bash
+zig build -Doptimize=ReleaseSafe    # ~6 MB, safety checks on  ← recommended
+zig build -Doptimize=ReleaseFast    # ~5.5 MB, safety off, speed-first
+zig build -Doptimize=ReleaseSmall   # ~1.4 MB, safety off, size-first
+```
+
+Beyond `-Doptimize`, the binary is statically linked against
+`libsecp256k1` (vendored under `vendor/secp256k1/`) and dynamically
+linked only against libc. Release-mode binaries are already stripped —
+running `strip` on them saves nothing further.
+
+You can point the build at a different libsecp256k1 install if you
+have one — see `build.zig` for include and library paths.
 
 ## Usage
 
