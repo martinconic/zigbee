@@ -542,12 +542,25 @@ Phase status lives in this file. Update the table when a phase enters
 | Pattern B — backend stamp service | — | Device fetches credential from an HTTPS endpoint at boot / before each push. Backend holds the batches and possibly buys new ones as they expire. Best for fleets. |
 | Pattern C — per-chunk RPC signing | — | Device sends each chunk address to a backend signing service which returns a stamp signature; device never holds the batch key. Best when device compromise must not compromise the batch. Slow (round-trip per chunk). |
 |  | | |
-| **0.7.0 — embedded** | | **Validate non-server deployment; ~4 weeks ARM, +6 weeks if MCU** |
-| 0.7a — ARM Linux release matrix | not started | Cross-compile vendor/secp256k1 for `arm-linux-gnueabihf` + `aarch64-linux-gnu`. Validate on Pi Zero W. GitHub Actions: static binaries for x86_64/armv7/arm64 Linux on every tag. ~1 week. |
-| 0.7b — ESP32-S3 spike (gated) | gated on use case | FreeRTOS + lwIP + Xtensa-cross-compiled libsecp256k1; replace `std.Thread` with `xTaskCreate`; replace GPA with FreeRTOS pool. Goal: retrieval over WebSocket on ESP32-S3 dev board. ~4 weeks; do only if there's a customer. |
+| **0.7.0 — embedded** | | **The runtime enablement for IoT (the headline focus); ~5 weeks ARM + ~4 weeks MCU** |
+| 0.7a — ARM Linux release matrix | not started | Cross-compile vendor/secp256k1 for `arm-linux-gnueabihf` + `aarch64-linux-gnu` (also musl variants for Alpine/OpenWRT). Validate on Pi Zero W. GitHub Actions: statically-linked binaries for x86_64/armv7/arm64 on every tag. ~1 week. |
+| 0.7b — ESP32-S3 spike | **planned** (re-classed from "gated" 2026-04-28 with IoT as headline focus) | FreeRTOS + lwIP + Xtensa-cross-compiled libsecp256k1; replace `std.Thread` with `xTaskCreate`; replace GPA with FreeRTOS pool allocator. Goal: retrieval + push over WebSocket on ESP32-S3 dev board. ~4 weeks. |
 | 0.7.0 release | not started | RELEASE_NOTES_0.7.md, version bump, tag. |
 |  | | |
-| **0.8+ — in-browser** | revisit after 0.7 | Major decisions to settle first: secp256k1 strategy (pure-Zig project vs Emscripten vs JS FFI to noble-secp256k1), transport abstraction, async event loop, Service Worker, MetaMask bridge for stamp purchase. Reference architecture: weeb-3. ~3–8 weeks once decided. |
+|  | | |
+| **Cross-cutting IoT items** | | **Operability concerns that span milestones; surfaced 2026-04-28 with IoT as headline focus. See [`docs/iot-roadmap.html` §4](docs/iot-roadmap.html#sec-cross).** |
+| X1 — Resource bounds (configurable queue / buffer / cap sizes) | starts in 0.5; finalised in 0.7a | CLI flags: `--max-peers`, `--max-in-flight-chunks`, `--store-max-bytes`, `--http-max-body`. Document recommended settings per target (server / Pi / ESP32). Prevents IoT-killer "lazy let-it-grow" defaults. |
+| X2 — Persistent state survives crash / power loss | folded into 0.4.1a + 0.5a + 0.6a-iv | Atomic write + journaled recovery for: identity, local store, bucket-index counters, cheque ledger. Tested by killing the process during writes. Bucket reuse after unclean reboot = silently rejected pushes. |
+| X3 — Continuous cross-compilation in CI | introduce in 0.5; formalise in 0.7a | GitHub Actions matrix: `x86_64-linux-musl`, `aarch64-linux-musl`, `arm-linux-musleabihf`. Every commit. `vendor/secp256k1` rebuilt for each target. Catches Linux-isms before they pile up. |
+| X4 — Production logging mode | early 0.6 | Log levels (`silent` / `error` / `info` / `debug`) + structured (one-line JSON) or human output. CLI flag `--log-level`. Daemon-mode default = `error`. A talkative daemon fills an MCU log buffer in minutes. |
+| X5 — Static-link path | 0.7a | Statically link against musl + vendored libsecp256k1. Single-file `scp zigbee <device>:/usr/local/bin/` deploys. Required for Alpine / OpenWRT / busybox-based ARM Linux. |
+|  | | |
+| **Proof-of-concept demos** | | **End-to-end IoT scenarios under `examples/`. Each one a self-contained working build that proves the IoT use case.** |
+| Demo 1 — ESP32-S3 temperature sensor → Swarm | after 0.6 + 0.7b | `examples/esp32-tempsensor/` — BME280 → ESP32-S3 → zigbee → Swarm. Pre-flashed batch credential (provisioning pattern A). One reading every 10 min. Reference printed via UART. |
+| Demo 2 — Raspberry Pi Zero retrieval gateway | after 0.5 + 0.7a | `examples/pi-zero-gateway/` — Pi Zero W on local Wi-Fi, zigbee daemon serving bee-compatible HTTP API to other devices on the LAN. Local chunk store caches. Privacy-preserving small-business gateway. |
+| Demo 3 — Firmware update from a Swarm reference | after 0.5 + 0.7a | `examples/firmware-update/` — embedded device boots, reads `/etc/zigbee/firmware.ref`, retrieves blob via zigbee, verifies a baked-in public-key signature, triggers reflash. Decentralised OTA. |
+|  | | |
+| **0.8+ — in-browser** | revisit after 0.7 | Major decisions to settle first: secp256k1 strategy (pure-Zig project vs Emscripten vs JS FFI to noble-secp256k1), transport abstraction, async event loop, Service Worker, MetaMask bridge for stamp purchase. Reference architecture: weeb-3. ~3–8 weeks once decided. **Not on the IoT critical path.** |
 |  | | |
 | **1.0 — full chain integration** | major; deferred | Own Ethereum RPC client + key management + postage contract bindings + on-chain stamp purchase + on-chain cheque cashing. The "approaches Go-bee parity" line. Multi-month project; only do if there's demand from operators who specifically want a non-Go full node. |
 |  | | |

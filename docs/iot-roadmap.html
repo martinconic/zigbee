@@ -1,0 +1,922 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>zigbee — IoT roadmap</title>
+<style>
+  /* Shared palette and typography with strategy.html, with a warmer
+     accent (forest green) to mark the IoT-focus framing. */
+  :root {
+    --fg:        #1a1f2e;
+    --fg-soft:   #4a5266;
+    --fg-faint:  #7c8497;
+    --bg:        #fbfaf6;
+    --bg-soft:   #f1eee4;
+    --bg-card:   #ffffff;
+    --accent:    #2f7d4d;     /* forest green for IoT framing */
+    --accent-2:  #b76d1d;
+    --rule:      #e3ddd0;
+    --code-bg:   #f4f1e9;
+    --good:      #2a7a3f;
+    --warn:      #b76d1d;
+    --bad:       #ad2e2e;
+    --shadow:    0 1px 2px rgba(20,30,50,.04), 0 4px 12px rgba(20,30,50,.06);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --fg:       #e6e3da;
+      --fg-soft:  #b9b3a4;
+      --fg-faint: #807a6d;
+      --bg:       #1a1d23;
+      --bg-soft:  #14171c;
+      --bg-card:  #232730;
+      --accent:   #7eb88d;
+      --accent-2: #d6a062;
+      --rule:     #2e333d;
+      --code-bg:  #14171c;
+      --good:     #6dbf86;
+      --warn:     #d6a062;
+      --bad:      #d97c7c;
+      --shadow:   0 1px 2px rgba(0,0,0,.3), 0 4px 12px rgba(0,0,0,.35);
+    }
+  }
+  *,*::before,*::after { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--fg);
+    font: 16px/1.65 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    text-rendering: optimizeLegibility;
+    -webkit-font-smoothing: antialiased;
+  }
+  .layout {
+    display: grid;
+    grid-template-columns: 260px minmax(0, 760px);
+    gap: 56px;
+    max-width: 1100px;
+    margin: 0 auto;
+    padding: 48px 32px 96px;
+  }
+  @media (max-width: 880px) {
+    .layout { grid-template-columns: 1fr; gap: 24px; padding: 24px 18px 64px; }
+    nav.toc { position: static; padding-top: 0; }
+  }
+  nav.toc {
+    position: sticky;
+    top: 32px;
+    align-self: start;
+    font-size: 14px;
+    line-height: 1.55;
+    max-height: calc(100vh - 64px);
+    overflow-y: auto;
+    padding-right: 8px;
+  }
+  nav.toc h2 {
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--fg-faint);
+    margin: 0 0 12px;
+  }
+  nav.toc ol {
+    list-style: none;
+    padding: 0;
+    margin: 0 0 16px;
+    counter-reset: section;
+  }
+  nav.toc li { counter-increment: section; margin: 0; }
+  nav.toc a {
+    display: block;
+    padding: 6px 0;
+    color: var(--fg-soft);
+    text-decoration: none;
+    border-left: 2px solid transparent;
+    padding-left: 12px;
+    margin-left: -12px;
+    transition: color .12s, border-color .12s;
+  }
+  nav.toc a::before {
+    content: counter(section) "  ";
+    color: var(--fg-faint);
+    font-variant-numeric: tabular-nums;
+    margin-right: 4px;
+  }
+  nav.toc a:hover, nav.toc a.active {
+    color: var(--accent);
+    border-left-color: var(--accent);
+  }
+  nav.toc .x-link {
+    display: block;
+    margin-top: 16px;
+    padding-top: 16px;
+    border-top: 1px solid var(--rule);
+    font-size: 12px;
+    color: var(--fg-faint);
+  }
+  nav.toc .x-link a {
+    display: inline;
+    padding: 0;
+    border-left: 0;
+    margin: 0;
+    color: var(--fg-soft);
+  }
+  main { min-width: 0; }
+  header.cover {
+    margin-bottom: 56px;
+    padding-bottom: 24px;
+    border-bottom: 1px solid var(--rule);
+  }
+  header.cover .eyebrow {
+    font-size: 12px;
+    font-weight: 600;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    color: var(--accent-2);
+    margin-bottom: 12px;
+  }
+  header.cover h1 {
+    font-size: 36px;
+    line-height: 1.15;
+    font-weight: 700;
+    letter-spacing: -0.02em;
+    margin: 0 0 16px;
+    color: var(--fg);
+  }
+  header.cover p.lede {
+    font-size: 19px;
+    line-height: 1.5;
+    color: var(--fg-soft);
+    margin: 0 0 16px;
+    max-width: 60ch;
+  }
+  header.cover .meta {
+    font-size: 13px;
+    color: var(--fg-faint);
+    display: flex;
+    gap: 18px;
+    flex-wrap: wrap;
+  }
+  header.cover .meta b {
+    color: var(--fg-soft);
+    font-weight: 600;
+  }
+  section {
+    margin-bottom: 64px;
+    scroll-margin-top: 24px;
+  }
+  section > h2 {
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    color: var(--accent-2);
+    margin: 0 0 4px;
+  }
+  section > h3.section-title {
+    font-size: 26px;
+    line-height: 1.2;
+    font-weight: 700;
+    letter-spacing: -0.01em;
+    margin: 0 0 24px;
+    color: var(--fg);
+  }
+  h4 {
+    font-size: 17px;
+    font-weight: 600;
+    margin: 32px 0 12px;
+    color: var(--fg);
+  }
+  h5 {
+    font-size: 15px;
+    font-weight: 600;
+    margin: 24px 0 8px;
+    color: var(--fg);
+  }
+  p { margin: 0 0 16px; }
+  ul, ol { margin: 0 0 16px; padding-left: 22px; }
+  li { margin: 4px 0; }
+  ul.tight li, ol.tight li { margin: 1px 0; }
+  strong { font-weight: 600; color: var(--fg); }
+  em { font-style: italic; color: var(--fg-soft); }
+  a { color: var(--accent); text-decoration: none; border-bottom: 1px solid rgba(47,125,77,.25); }
+  a:hover { border-bottom-color: var(--accent); }
+  hr {
+    border: 0; height: 1px; background: var(--rule);
+    margin: 40px 0;
+  }
+  code {
+    font: 13.5px/1.55 "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+    background: var(--code-bg);
+    color: var(--fg);
+    padding: 1px 5px;
+    border-radius: 3px;
+    word-break: break-word;
+  }
+  pre {
+    background: var(--code-bg);
+    border: 1px solid var(--rule);
+    border-radius: 6px;
+    padding: 14px 16px;
+    overflow-x: auto;
+    margin: 16px 0;
+    font: 13px/1.6 "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+  }
+  pre code { background: transparent; padding: 0; }
+  .table-wrap { overflow-x: auto; margin: 16px -2px 24px; }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 14px;
+    line-height: 1.5;
+  }
+  th, td {
+    text-align: left;
+    vertical-align: top;
+    padding: 10px 12px;
+    border-bottom: 1px solid var(--rule);
+  }
+  th {
+    font-weight: 600;
+    color: var(--fg);
+    background: var(--bg-soft);
+    border-bottom: 1.5px solid var(--rule);
+  }
+  td { color: var(--fg-soft); }
+  td strong { color: var(--fg); }
+  table.compact { font-size: 13px; }
+  table.compact th, table.compact td { padding: 8px 10px; }
+  /* Status pills for the priority column */
+  .pri {
+    display: inline-block;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    padding: 2px 8px;
+    border-radius: 9999px;
+    white-space: nowrap;
+  }
+  .pri.essential  { background: rgba(173,46,46,.12);  color: var(--bad); }
+  .pri.important  { background: rgba(183,109,29,.13); color: var(--warn); }
+  .pri.medium     { background: rgba(42,122,63,.13);  color: var(--good); }
+  .pri.skip       { background: var(--bg-soft);       color: var(--fg-faint); }
+  .callout {
+    background: var(--bg-card);
+    border: 1px solid var(--rule);
+    border-left: 3px solid var(--accent);
+    border-radius: 4px;
+    padding: 16px 20px;
+    margin: 24px 0;
+    box-shadow: var(--shadow);
+  }
+  .callout.warn { border-left-color: var(--warn); }
+  .callout.good { border-left-color: var(--good); }
+  .callout.bad  { border-left-color: var(--bad); }
+  .callout > :first-child { margin-top: 0; }
+  .callout > :last-child { margin-bottom: 0; }
+  .callout .label {
+    display: inline-block;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--accent);
+    margin-bottom: 6px;
+  }
+  .callout.warn .label { color: var(--warn); }
+  .callout.good .label { color: var(--good); }
+  .callout.bad  .label { color: var(--bad); }
+  .grouphead {
+    background: var(--bg-soft);
+    font-weight: 600;
+    color: var(--fg);
+  }
+  .grouphead td { padding-top: 14px; padding-bottom: 14px; }
+  footer.colophon {
+    margin-top: 80px;
+    padding-top: 24px;
+    border-top: 1px solid var(--rule);
+    font-size: 13px;
+    color: var(--fg-faint);
+  }
+  @media print {
+    .layout { display: block; max-width: none; padding: 0; }
+    nav.toc { display: none; }
+    main { max-width: none; }
+    section, pre, .callout { page-break-inside: avoid; }
+    a { color: inherit; border-bottom: none; }
+  }
+</style>
+</head>
+<body>
+<div class="layout">
+
+<nav class="toc" aria-label="Table of contents">
+  <h2>IoT roadmap</h2>
+  <ol>
+    <li><a href="#sec-headline">IoT as the headline focus</a></li>
+    <li><a href="#sec-tasks">Task table — annotated for IoT</a></li>
+    <li><a href="#sec-gaps">Three gaps closed</a></li>
+    <li><a href="#sec-cross">Cross-cutting IoT items</a></li>
+    <li><a href="#sec-demos">Proof-of-concept demos</a></li>
+    <li><a href="#sec-deploy">What deployment looks like</a></li>
+    <li><a href="#sec-refs">How this fits the other docs</a></li>
+  </ol>
+  <div class="x-link">
+    See also:<br>
+    <a href="strategy.html">strategy.html</a> — the original strategic dossier (research findings, options analysis, the full roadmap).
+  </div>
+</nav>
+
+<main>
+
+<header class="cover">
+  <div class="eyebrow">zigbee · IoT roadmap</div>
+  <h1>zigbee for embedded — what we build, why, and in what order</h1>
+  <p class="lede">
+    The 0.5 → 0.6 → 0.7 sequence locked in by the strategy dossier
+    happens to be exactly the path to a working IoT story. This page
+    re-frames each work unit through "what does it buy a deployed
+    embedded device", flags three things the original plan
+    under-specified for IoT, and adds the cross-cutting items and
+    demo tracks that prove the IoT use case end-to-end.
+  </p>
+  <div class="meta">
+    <span><b>Captured:</b> 2026-04-28</span>
+    <span><b>Repo:</b> github.com/martinconic/zigbee</span>
+    <span><b>Latest release:</b> v0.4.0</span>
+    <span><b>Headline focus:</b> IoT / embedded</span>
+  </div>
+</header>
+
+<!-- ============================================================== -->
+<!-- 1. HEADLINE FOCUS                                              -->
+<!-- ============================================================== -->
+<section id="sec-headline">
+  <h2>Section 1</h2>
+  <h3 class="section-title">IoT is the headline focus — what changes, what doesn't</h3>
+
+  <p>
+    Going forward, the framing of zigbee is:
+  </p>
+  <p class="callout">
+    <strong>zigbee is the small-footprint Bee client family for
+    devices that can't run Go bee.</strong> Servers and browsers are
+    valid targets but not the headline; the IoT / embedded case
+    drives priorities.
+  </p>
+
+  <p>What that <em>doesn't</em> change:</p>
+  <ul>
+    <li>The four-milestone sequence (<strong>0.5 retrieval-maturity →
+        0.6 push → 0.7 embedded → 0.8+ browser</strong>). Each milestone
+        is a hard prerequisite for IoT — you can't build an IoT story
+        on a client that can't get past the 25-chunk-per-peer
+        accounting wall, or that can't push.</li>
+    <li>The "no chain integration in zigbee proper" architecture.
+        The browser-via-MetaMask pattern stays valid; the
+        server-via-own-RPC pattern stays valid; neither is on the
+        IoT critical path.</li>
+    <li>The "accept-credential-from-outside" model for postage
+        stamps. Patterns A (pre-flash), B (backend service),
+        C (per-chunk RPC) from <a href="strategy.html#sec-esp32">strategy.html §7</a>
+        cover the realistic IoT deployment models.</li>
+  </ul>
+
+  <p>What it <em>does</em> change:</p>
+  <ul>
+    <li><strong>0.7b ESP32-S3 spike is no longer "gated on use case" —
+        it's <em>planned</em>.</strong> If IoT is the destination,
+        MCU validation is a milestone, not an aspiration.</li>
+    <li><strong>Five cross-cutting concerns become first-class</strong>
+        — resource bounds, persistent state durability, continuous
+        cross-compilation in CI, production logging, static-link
+        path. None are tasks today; all are easy to retrofit by
+        accident if we don't track them. See §4.</li>
+    <li><strong>Three demo / proof-of-concept tracks</strong> are
+        added, each one a concrete IoT scenario that proves the
+        plumbing works end-to-end. See §5.</li>
+    <li><strong>Within each milestone, IoT-essential items are
+        prioritised over IoT-medium ones.</strong> E.g. persistent
+        identity (essential) lands first; SOC validation (medium)
+        lands later in the same patch.</li>
+  </ul>
+</section>
+
+<!-- ============================================================== -->
+<!-- 2. ANNOTATED TASK TABLE                                        -->
+<!-- ============================================================== -->
+<section id="sec-tasks">
+  <h2>Section 2</h2>
+  <h3 class="section-title">Task table — annotated for IoT relevance</h3>
+
+  <p>
+    Live from <a href="../PLAN.md">PLAN.md</a> §9, with a priority
+    column for what each item buys you specifically on a deployed
+    embedded device.
+  </p>
+
+  <p style="font-size:13px;color:var(--fg-faint)">
+    Priority legend:
+    <span class="pri essential">essential</span> = blocks IoT outright.
+    <span class="pri important">important</span> = real-world reliability / cost.
+    <span class="pri medium">medium</span> = nice to have; defer if pressed.
+    <span class="pri skip">skip</span> = irrelevant for IoT.
+  </p>
+
+  <div class="table-wrap">
+    <table class="compact">
+      <thead>
+        <tr>
+          <th>#</th>
+          <th>Work unit</th>
+          <th>Effort</th>
+          <th>Priority</th>
+          <th>Why for IoT</th>
+        </tr>
+      </thead>
+      <tbody>
+
+        <tr class="grouphead"><td colspan="5">0.4.1 patch — small wins</td></tr>
+        <tr>
+          <td>0.4.1a</td>
+          <td>Persistent libp2p identity → <code>~/.zigbee/identity.key</code></td>
+          <td>1–2 d</td>
+          <td><span class="pri essential">essential</span></td>
+          <td>Reboots are routine for IoT. A device that loses its identity on every reboot loses bee accounting state every time.</td>
+        </tr>
+        <tr>
+          <td>0.4.1b</td>
+          <td>Dead-connection pruning</td>
+          <td>2–3 d</td>
+          <td><span class="pri important">important</span></td>
+          <td>A daemon meant to run for months on an ESP32 cannot leak memory on every connection drop.</td>
+        </tr>
+        <tr>
+          <td>0.4.1c</td>
+          <td>SOC validation</td>
+          <td>3–5 d</td>
+          <td><span class="pri medium">medium</span></td>
+          <td>Defence-in-depth. Required prep for reading feeds (a future IoT capability — devices subscribing to feed updates).</td>
+        </tr>
+
+        <tr class="grouphead"><td colspan="5">0.5.0 — retrieval maturity (~10 work-weeks FTE)</td></tr>
+        <tr>
+          <td>0.5a</td>
+          <td>Local flat-file chunk store (basic LRU)</td>
+          <td>~1 wk</td>
+          <td><span class="pri essential">essential</span></td>
+          <td>IoT devices have intermittent connectivity. A local cache means firmware updates / config can be re-read offline. Also lets one device act as a tiny Swarm cache for nearby devices on the same LAN.</td>
+        </tr>
+        <tr>
+          <td>0.5b</td>
+          <td>Encrypted-chunk references (<code>refLength = 64</code>)</td>
+          <td>~2 wk</td>
+          <td><span class="pri medium">medium</span></td>
+          <td>Useful when telemetry is sensitive (medical, industrial). Not required for unencrypted public data.</td>
+        </tr>
+        <tr>
+          <td>0.5c</td>
+          <td><strong>SWAP cheques (issue-only)</strong></td>
+          <td>~4–5 wk</td>
+          <td><span class="pri essential">essential</span></td>
+          <td>Without SWAP a device can pull at most ~25–30 chunks per peer per session — about 100 KB. Useless for firmware (~MB) or sustained sensor sync. <strong>The single biggest IoT unblocker.</strong></td>
+        </tr>
+        <tr>
+          <td>0.5.0</td>
+          <td>Cut release</td>
+          <td>—</td>
+          <td>—</td>
+          <td>—</td>
+        </tr>
+
+        <tr class="grouphead"><td colspan="5">0.6.0 — push (~12 weeks FTE; the IoT-headline milestone)</td></tr>
+        <tr>
+          <td>0.6 design</td>
+          <td>Accept-credential-from-outside model — protocol-only push, no chain code in zigbee</td>
+          <td>—</td>
+          <td><span class="pri essential">essential</span></td>
+          <td>This <em>is</em> the IoT story. Device gets a batch credential, signs stamps locally, never touches Ethereum. See <a href="strategy.html#sec-esp32">strategy.html §7</a>.</td>
+        </tr>
+        <tr>
+          <td>0.6a-i</td>
+          <td>Postage batch loader</td>
+          <td>~100 LOC</td>
+          <td><span class="pri essential">essential</span></td>
+          <td>Reads the credential the device receives via patterns A/B/C.</td>
+        </tr>
+        <tr>
+          <td>0.6a-ii</td>
+          <td>Stamp issuer</td>
+          <td>~50 LOC</td>
+          <td><span class="pri essential">essential</span></td>
+          <td>Sign stamps locally per chunk. Reuses our existing secp256k1.</td>
+        </tr>
+        <tr>
+          <td>0.6a-iii</td>
+          <td>Stamp verifier</td>
+          <td>~50 LOC</td>
+          <td><span class="pri medium">medium</span></td>
+          <td>Verify receipts on chunks we push (proves the storer received them).</td>
+        </tr>
+        <tr>
+          <td>0.6a-iv</td>
+          <td>Bucket-index tracking + <strong>persistence</strong></td>
+          <td>~150 LOC + flash</td>
+          <td><span class="pri essential">essential</span></td>
+          <td>Bee rejects stamps with reused bucket indices. On a device that reboots, this state must survive across power cycles or every reboot risks rejected pushes.</td>
+        </tr>
+        <tr>
+          <td>0.6b</td>
+          <td><code>/swarm/pushsync/1.3.1</code> initiator + receipt verification</td>
+          <td>~300 LOC</td>
+          <td><span class="pri essential">essential</span></td>
+          <td>The actual push protocol. Without this there's no upload at all.</td>
+        </tr>
+        <tr>
+          <td>0.6c-i</td>
+          <td>HTTP <code>POST /bytes</code> upload</td>
+          <td>~250 LOC</td>
+          <td><span class="pri important">important</span></td>
+          <td>Useful for IoT clients that produce raw blobs. May not be needed if device uses zigbee in-process (as a library) instead of via HTTP.</td>
+        </tr>
+        <tr>
+          <td>0.6c-ii</td>
+          <td>HTTP <code>POST /bzz</code> + manifest building</td>
+          <td>~150 LOC</td>
+          <td><span class="pri medium">medium</span></td>
+          <td>Manifests matter when references need filenames / paths. IoT often doesn't — sensor reading at <code>&lt;hash&gt;</code> is enough.</td>
+        </tr>
+        <tr>
+          <td>0.6.0</td>
+          <td>Cut release</td>
+          <td>—</td>
+          <td>—</td>
+          <td>—</td>
+        </tr>
+
+        <tr class="grouphead"><td colspan="5">0.7.0 — embedded (the runtime enablement)</td></tr>
+        <tr>
+          <td>0.7a</td>
+          <td>ARM Linux release matrix</td>
+          <td>~1 wk</td>
+          <td><span class="pri essential">essential</span></td>
+          <td>The easy IoT target — Pi Zero, BeagleBone, OpenWRT routers, edge gateways. Cross-compile + CI artifacts.</td>
+        </tr>
+        <tr>
+          <td>0.7b</td>
+          <td>ESP32-S3 spike <em>(planned, not gated)</em></td>
+          <td>~4 wk</td>
+          <td><span class="pri essential">essential</span></td>
+          <td>The hard IoT target — actual microcontrollers. <strong>Re-classed from "gated on use case" to "planned"</strong> now that IoT is the headline focus.</td>
+        </tr>
+        <tr>
+          <td>0.7.0</td>
+          <td>Cut release</td>
+          <td>—</td>
+          <td>—</td>
+          <td>—</td>
+        </tr>
+
+        <tr class="grouphead"><td colspan="5">0.8+ — browser / 1.0 — chain</td></tr>
+        <tr>
+          <td>0.8+</td>
+          <td>Browser via wasm</td>
+          <td>3–8 wk</td>
+          <td><span class="pri skip">skip</span></td>
+          <td>Irrelevant for IoT. Defer until after 0.7 ships and the IoT case is validated.</td>
+        </tr>
+        <tr>
+          <td>1.0</td>
+          <td>Full chain integration (own Eth RPC, on-chain stamp purchase)</td>
+          <td>multi-month</td>
+          <td><span class="pri skip">skip</span></td>
+          <td>The "device buys its own stamps on-chain" use case is a niche even within IoT. Stay with provisioning patterns A/B/C.</td>
+        </tr>
+
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<!-- ============================================================== -->
+<!-- 3. THREE GAPS                                                  -->
+<!-- ============================================================== -->
+<section id="sec-gaps">
+  <h2>Section 3</h2>
+  <h3 class="section-title">Three things the original plan under-specified for IoT — now closed</h3>
+
+  <h4>Gap 1 — 0.7b ESP32-S3 was "gated"; now planned</h4>
+  <p>
+    PLAN.md previously said "ESP32-S3 spike — gated on use case". If
+    IoT is the stated focus, that <em>is</em> the use case. The
+    spike is now planned and on the milestone path, with effort
+    estimated at ~4 weeks (FreeRTOS + lwIP + Xtensa-cross-compiled
+    libsecp256k1 + thread→task replacement + GPA→pool allocator).
+  </p>
+
+  <h4>Gap 2 — Cross-cutting IoT items were missing</h4>
+  <p>
+    Five concerns that fall <em>across</em> milestones rather than
+    inside one. None were tracked anywhere; all are easy to retrofit
+    by accident if we don't surface them. See §4.
+  </p>
+
+  <h4>Gap 3 — Demos / proof-of-concept tracks weren't called out</h4>
+  <p>
+    The IoT story is sold by working examples, not by a feature list.
+    Three concrete scenarios — temp sensor, Pi Zero gateway, firmware
+    update from Swarm — are now tracked separately from the milestone
+    work units. See §5.
+  </p>
+</section>
+
+<!-- ============================================================== -->
+<!-- 4. CROSS-CUTTING ITEMS                                         -->
+<!-- ============================================================== -->
+<section id="sec-cross">
+  <h2>Section 4</h2>
+  <h3 class="section-title">Cross-cutting IoT items — added to the plan</h3>
+
+  <p>
+    These don't belong inside any single milestone but they have to
+    land on a schedule, otherwise we get a daemon that nominally
+    "works on a Pi" but in practice can't be deployed at scale.
+  </p>
+
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr><th>#</th><th>Item</th><th>Lands in</th><th>What it specifically prevents</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>X1</td>
+          <td><strong>Resource bounds</strong> — make every queue / buffer / cap configurable. CLI flags: <code>--max-peers</code>, <code>--max-in-flight-chunks</code>, <code>--store-max-bytes</code>, <code>--http-max-body</code>. Document recommended settings per target (server / Pi / ESP32).</td>
+          <td>start in 0.5; finalise in 0.7a</td>
+          <td>An ESP32 with 8 MB PSRAM cannot run with the same buffer defaults as a desktop. A lazy "let it grow" answer is what kills IoT deployments.</td>
+        </tr>
+        <tr>
+          <td>X2</td>
+          <td><strong>Persistent state survives crash / power loss</strong> — atomic write + journaled recovery for: identity, local store, bucket-index counters, cheque ledger. Tested by killing the process during writes; on recovery, partial state is rolled back, not silently corrupted.</td>
+          <td>folded into 0.4.1a + 0.5a + 0.6a-iv</td>
+          <td>An IoT device that reuses a bucket index after an unclean reboot starts having its pushes silently rejected. An identity file partially overwritten = lost peer.</td>
+        </tr>
+        <tr>
+          <td>X3</td>
+          <td><strong>Continuous cross-compilation in CI</strong> from the start of 0.5. GitHub Actions matrix: <code>x86_64-linux-musl</code>, <code>aarch64-linux-musl</code>, <code>arm-linux-musleabihf</code>. Every commit. <code>vendor/secp256k1</code> rebuilt for each target.</td>
+          <td>introduce in 0.5; formalise in 0.7a</td>
+          <td>Don't wait for 0.7 to discover something doesn't cross-compile. Catches Linux-isms (e.g. accidental glibc-only syscalls, vendored library assumptions) before they pile up across multiple modules.</td>
+        </tr>
+        <tr>
+          <td>X4</td>
+          <td><strong>Production logging mode</strong> — log levels (<code>silent</code> / <code>error</code> / <code>info</code> / <code>debug</code>) + structured (JSON one-line) or human output. CLI flag <code>--log-level</code>. Daemon-mode default = <code>error</code>.</td>
+          <td>early 0.6</td>
+          <td>A daemon that logs every retrieval attempt at debug level fills an MCU's log buffer in minutes. Production deployments need silence by default.</td>
+        </tr>
+        <tr>
+          <td>X5</td>
+          <td><strong>Static-link path</strong> — produce binaries that link statically against musl + vendored libsecp256k1. Single-file <code>scp zigbee &lt;device&gt;:/usr/local/bin/</code> deploys.</td>
+          <td>0.7a</td>
+          <td>Alpine, OpenWRT, busybox-based ARM Linux distros either don't have glibc or have an old version. Static binaries deploy on every Linux-like target without dependency drama.</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="callout">
+    <div class="label">Common thread</div>
+    <p>
+      All five are about <em>operability</em>: making zigbee something
+      you can actually ship to a device and forget about for a year,
+      not something that runs in your dev shell. None are protocol
+      work; all of them prevent specific real-world IoT failure modes.
+    </p>
+  </div>
+</section>
+
+<!-- ============================================================== -->
+<!-- 5. DEMOS                                                       -->
+<!-- ============================================================== -->
+<section id="sec-demos">
+  <h2>Section 5</h2>
+  <h3 class="section-title">Proof-of-concept demos — three end-to-end IoT scenarios</h3>
+
+  <p>
+    Each one a self-contained example sitting under
+    <code>examples/</code> in the repo. Goal: prove the IoT use case
+    works end-to-end, not just that the protocol implementation
+    passes tests.
+  </p>
+
+  <h4>Demo 1 — ESP32-S3 temperature sensor → Swarm</h4>
+  <p style="font-size:13px;color:var(--fg-faint)">
+    <em>Lands after 0.6 + 0.7b. Path: <code>examples/esp32-tempsensor/</code>.</em>
+  </p>
+  <ul>
+    <li>BME280 sensor wired to ESP32-S3 dev board.</li>
+    <li>Reading every 10 minutes; pushed to Swarm via zigbee as a CAC chunk.</li>
+    <li>Pre-flashed batch credential (provisioning pattern A from <a href="strategy.html#sec-esp32">strategy.html §7</a>).</li>
+    <li>Resulting reference printed via UART — <strong>concrete proof that an ESP32 can publish to Swarm autonomously.</strong></li>
+    <li>Reference scenario for blog posts / demos / pitches.</li>
+  </ul>
+
+  <h4>Demo 2 — Raspberry Pi Zero retrieval gateway</h4>
+  <p style="font-size:13px;color:var(--fg-faint)">
+    <em>Lands after 0.5 + 0.7a. Path: <code>examples/pi-zero-gateway/</code>.</em>
+  </p>
+  <ul>
+    <li>Pi Zero W on local Wi-Fi, running zigbee daemon.</li>
+    <li>Bee-compatible HTTP API exposed on <code>0.0.0.0:9090</code> (bound to the LAN).</li>
+    <li>Other devices on the LAN — phones, laptops, smart-home hubs — hit the Pi for Swarm content.</li>
+    <li>Local chunk store (0.5a) caches frequently-fetched chunks.</li>
+    <li>Demonstrates <strong>"one Pi serving Swarm to a household / small business"</strong>. Useful as a privacy-preserving pinned-content gateway.</li>
+  </ul>
+
+  <h4>Demo 3 — Firmware update from a Swarm reference</h4>
+  <p style="font-size:13px;color:var(--fg-faint)">
+    <em>Lands after 0.5 + 0.7a (ARM Linux device). Path: <code>examples/firmware-update/</code>.</em>
+  </p>
+  <ul>
+    <li>Embedded device boots, reads <code>/etc/zigbee/firmware.ref</code> (a 64-char hex Swarm reference).</li>
+    <li>Retrieves the firmware blob via zigbee from any reachable bee peer.</li>
+    <li>Verifies a signature against a baked-in public key.</li>
+    <li>Triggers a reflash via the device's own update mechanism.</li>
+    <li>Shows the <strong>"OTA from a decentralised store"</strong> story — central-server-free firmware delivery.</li>
+  </ul>
+
+  <p class="callout">
+    <span class="label">Why these three</span>
+    They cover the three honest IoT shapes: <strong>upload-only</strong>
+    (sensor → Swarm), <strong>download-only</strong> (firmware ←
+    Swarm), and <strong>two-way / share-with-LAN</strong> (Pi
+    gateway). Together they prove zigbee is useful at the device
+    edge, not just on a developer's desk.
+  </p>
+</section>
+
+<!-- ============================================================== -->
+<!-- 6. WHAT DEPLOYMENT LOOKS LIKE                                  -->
+<!-- ============================================================== -->
+<section id="sec-deploy">
+  <h2>Section 6</h2>
+  <h3 class="section-title">What an IoT deployment actually looks like</h3>
+
+  <p>
+    Three deployment shapes, each with a clear separation between
+    "where the BZZ is paid" and "what the device does". The device
+    never spends gas, never holds ETH, never broadcasts a tx.
+  </p>
+
+  <h4>Shape 1 — Solo maker / hobbyist</h4>
+  <pre><code>┌────────────────┐    one-time           ┌─────────┐
+│ developer's    │──── buy batch ─────▶  │ bee on  │
+│ laptop (bee)   │                        │ mainnet │
+└─────────┬──────┘                        └─────────┘
+          │ export {batch_id, key, depth, …}
+          │ flash via UART / OTA
+          ▼
+┌────────────────┐
+│  ESP32-S3      │  zigbee.signStamp(batch, addr)
+│  (zigbee +     │  pushsync to nearest bee peer
+│   sensor)      │  ─────────────────────────────▶ Swarm
+└────────────────┘
+   forever, no chain access</code></pre>
+
+  <h4>Shape 2 — Small fleet (10-1000 devices)</h4>
+  <pre><code>┌──────────────────┐    on-chain ops     ┌─────────┐
+│ stamp-service    │──── buy batch ────▶ │ bee     │
+│ backend (HTTPS)  │                      └─────────┘
+└────────┬─────────┘
+         │ device → POST /provision
+         │ ← {batch_id, key, depth, valid_until}
+         ▼
+┌──────────────────┐         ┌──────────────────┐
+│  device #1       │         │  device #N       │
+│  (zigbee)        │   …     │  (zigbee)        │
+└────────┬─────────┘         └────────┬─────────┘
+         └───── Swarm via pushsync ────┘</code></pre>
+
+  <h4>Shape 3 — High-security / per-chunk RPC signing</h4>
+  <pre><code>┌──────────────────┐    holds batch key  ┌─────────┐
+│ signing service  │      (HSM)          │ bee     │
+└────────┬─────────┘                      └─────────┘
+         ▲ device → POST /sign {chunk_addr}
+         │ ← {stamp signature}
+         │
+┌────────┴─────────┐
+│  device          │  pushsync to bee peer
+│  (zigbee, no key)│  ────────────────────▶ Swarm
+└──────────────────┘</code></pre>
+
+  <p>
+    All three are supported by the same zigbee binary; the
+    differences live in <em>where the credential comes from</em>
+    and <em>how often the device fetches it</em> — not in zigbee's
+    code path. The device itself is read-mostly + sign-only.
+  </p>
+
+  <p class="callout good">
+    <span class="label">Concrete reference numbers</span>
+    Depth-22 batch on mainnet ≈ <strong>$5–15</strong>. Capacity:
+    2<sup>22</sup> × 2<sup>16</sup> = 2.7 × 10<sup>11</sup> stamp slots
+    — <strong>vastly oversized</strong> for a single device. A
+    temperature sensor at one reading every 10 min consumes about
+    52 600 stamps a year. <strong>Sub-cent per device per year.</strong>
+    Sustainable for fleets of thousands on a single batch.
+  </p>
+</section>
+
+<!-- ============================================================== -->
+<!-- 7. REFS                                                        -->
+<!-- ============================================================== -->
+<section id="sec-refs">
+  <h2>Section 7</h2>
+  <h3 class="section-title">How this fits the other docs</h3>
+
+  <p>
+    Five docs in the repo carry the IoT story now, layered from
+    high-level to operational:
+  </p>
+
+  <ul>
+    <li>
+      <strong><a href="strategy.html">strategy.html</a></strong> —
+      the original strategic dossier. Research findings (vertex,
+      weeb-3, bee PR #5321), the three options analysis, the
+      four-milestone roadmap, the chain-integration model. Written
+      once; doesn't change with the IoT re-framing — IoT is one of
+      the three options that happened to win.
+    </li>
+    <li>
+      <strong>iot-roadmap.html</strong> (this page) — the
+      IoT-specific re-framing. Read alongside strategy.html.
+    </li>
+    <li>
+      <strong><a href="../PLAN.md">PLAN.md</a></strong> §9 — the
+      live tracking table. Updated when phases ship. The table in
+      §2 of this page is sourced from there.
+    </li>
+    <li>
+      <strong><a href="../STATUS.md">STATUS.md</a></strong> — the
+      operational snapshot, with the resumption checkpoint at the
+      top. Refreshed every time state meaningfully changes.
+    </li>
+    <li>
+      <strong><a href="../README.md">README.md</a></strong>,
+      <strong><a href="../USAGE.md">USAGE.md</a></strong>,
+      <strong><a href="../ARCHITECTURE.md">ARCHITECTURE.md</a></strong> —
+      user-facing docs. They evolve as features land; the IoT
+      framing will surface in them per release.
+    </li>
+  </ul>
+
+  <p>
+    When we cut 0.5, 0.6, 0.7 — the IoT angle gets release notes
+    of its own (<code>RELEASE_NOTES_0.5.md</code>, etc.) so the
+    "what does this mean for embedded" framing stays explicit.
+  </p>
+</section>
+
+<footer class="colophon">
+  <p>
+    Captured 2026-04-28, locking in IoT / embedded as the headline
+    focus for zigbee. The four-milestone sequence
+    (0.5 → 0.6 → 0.7 → 0.8) is unchanged; what's new is the
+    cross-cutting items in §4, the demo tracks in §5, and the
+    re-classification of the ESP32-S3 spike from "gated on use
+    case" to "planned" in §3.
+  </p>
+  <p>
+    Single-file HTML, no external assets, no JavaScript dependencies
+    (one tiny inline progressive-enhancement script for active-link
+    highlighting). Print-friendly. Auto-adapts to dark mode.
+  </p>
+</footer>
+
+</main>
+</div>
+
+<script>
+  (function () {
+    var sections = document.querySelectorAll('section[id]');
+    var links = document.querySelectorAll('nav.toc a');
+    function onScroll() {
+      var pos = window.scrollY + 120;
+      var current = null;
+      sections.forEach(function (sec) {
+        if (sec.offsetTop <= pos) current = sec.id;
+      });
+      links.forEach(function (a) {
+        a.classList.toggle('active', a.getAttribute('href') === '#' + current);
+      });
+    }
+    document.addEventListener('scroll', onScroll, { passive: true });
+    onScroll();
+  })();
+</script>
+
+</body>
+</html>

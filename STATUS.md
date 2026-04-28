@@ -1,8 +1,9 @@
 # zigbee — operational status snapshot
 
 **Release:** 0.4 — bee-compatible read-only HTTP API ([release notes](RELEASE_NOTES_0.4.md), preceded by [0.3 release notes](RELEASE_NOTES_0.3.md))
+**Headline focus:** **IoT / embedded.** zigbee is the small-footprint Bee client family for devices that can't run Go bee. Locked in 2026-04-28; framing detail in [`docs/iot-roadmap.html`](docs/iot-roadmap.html).
 **Next milestone:** 0.4.1 patch (persistent identity + dead-conn pruning + SOC validation), then 0.5.0 (retrieval-maturity, headlined by SWAP)
-**Strategy reference:** [`docs/strategy.html`](docs/strategy.html) — locked-in roadmap from 2026-04-28
+**Strategy references:** [`docs/iot-roadmap.html`](docs/iot-roadmap.html) (IoT-specific roadmap) + [`docs/strategy.html`](docs/strategy.html) (full strategic dossier)
 **Date last refreshed:** 2026-04-28
 **Tests:** 62/62 unit tests pass (`zig build test --summary all`)
 **Source size:** ~7,900 lines of Zig across 27 files in `zigbee/src/`

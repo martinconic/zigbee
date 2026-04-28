@@ -3,6 +3,14 @@
 A Swarm Bee client written in pure Zig. Standalone (no FFI to other libp2p
 stacks), interoperable with the existing Go bee on the live network.
 
+**Headline focus: IoT / embedded.** zigbee is the small-footprint Bee
+client for devices that can't run Go bee — Pi-class boards, edge
+gateways, and (planned) microcontrollers. Servers and browsers are
+valid targets but not the headline. Roadmap and per-milestone
+breakdown:
+[`docs/iot-roadmap.html`](docs/iot-roadmap.html). Background and
+options analysis: [`docs/strategy.html`](docs/strategy.html).
+
 Source: https://github.com/martinconic/zigbee
 
 Requirements: Zig 0.15.x and a C toolchain (for the vendored libsecp256k1).
