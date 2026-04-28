@@ -428,7 +428,8 @@ zigbee/
 │   ├── peer_table.zig              (HashMap by overlay + 32 Kademlia bins + closestTo)
 │   ├── pricing.zig                 (/swarm/pricing/1.0.0 — responder + initiator)
 │   ├── hive.zig                    (/swarm/hive/1.1.0 — responder; populates peer_table)
-│   ├── retrieval.zig               (/swarm/retrieval/1.4.0 initiator; CAC validation with wire-decoded span)
+│   ├── retrieval.zig               (/swarm/retrieval/1.4.0 initiator; CAC first then SOC validation, ChunkAddressMismatch if neither)
+│   ├── soc.zig                     (Single-Owner Chunk parser+validator — id‖sig‖span‖payload, EIP-191-prefixed sig over keccak256(id ‖ inner_addr); bee golden-vector tested)
 │   ├── joiner.zig                  (chunk-tree reassembler — walks span/payload tree, branching=128)
 │   │
 │   ├── connection.zig              (heap-allocated Connection: TCP+Noise+Yamux; dial(); startAcceptLoop())
@@ -442,7 +443,6 @@ zigbee/
 │   ├── swarm/pushsync.zig           (Phase 9)
 │   ├── swarm/pullsync.zig           (Phase 10)
 │   ├── swarm/manifest.zig           (Phase 7 — mantaray walk for /bzz/<ref>/<path>)
-│   ├── swarm/soc.zig                (Phase 7 — Single-Owner Chunk validation)
 │   ├── store/flatfs.zig             (Phase 8 — local chunk store)
 │   └── log.zig                      (proper levels + topics; replaces std.debug.print)
 ```
@@ -515,10 +515,10 @@ Phase status lives in this file. Update the table when a phase enters
 | 8 — Bee-compatible read-only HTTP API | **done — zigbee 0.4** ✅ | `/health`, `/readiness`, `/node` (`beeMode: ultra-light`), `/addresses`, `/peers`, `/topology`, `/chunks/<addr>`, `/bytes/<ref>`, `/bzz/<ref>/<path>`. All four storage endpoints verified byte-identical to bee. See [`RELEASE_NOTES_0.4.md`](RELEASE_NOTES_0.4.md). |
 | 9 — Strategy lock-in | **done — 2026-04-28** ✅ | Strategic conversation following 0.4 release. Roadmap agreed: 0.5 retrieval-maturity → 0.6 push → 0.7 embedded → 0.8+ browser. Chain integration treated as per-target outer ring (browser via wallet, server via own RPC, embedded via pre-flashed credential). Captured in [`docs/strategy.html`](docs/strategy.html). |
 |  | | |
-| **0.4.1 patch (in flight)** | | **3 small wins shipped together as a tag** |
-| 0.4.1a — Persistent libp2p identity | next | Save secp256k1 key to `~/.zigbee/identity.key` (0600 perms) on first run; load on every subsequent run. Fixes "fresh debt counter at bee on every restart". 1–2 days. |
-| 0.4.1b — Dead-connection pruning | not started | Remove `Connection` from `node.connections` when its accept-thread exits. Closes a memory leak in long-running daemons. 2–3 days. |
-| 0.4.1c — SOC validation | not started | Verify Single-Owner Chunks via `keccak256(id ‖ owner_eth_address)` instead of pass-through. Required prep for reading feeds. 3–5 days. |
+| **0.4.1 patch** | **done — zigbee 0.4.1** ✅ | All three sub-patches landed and tagged. See [`RELEASE_NOTES_0.4.1.md`](RELEASE_NOTES_0.4.1.md). |
+| 0.4.1a — Persistent libp2p identity | done | `Identity.loadOrCreate` writes 64-byte file (32-byte secp256k1 key ‖ 32-byte bzz nonce) atomically to `~/.zigbee/identity.key`; CLI `--identity-file <path>` (or `:ephemeral:` to opt out). Fixes "fresh accounting state on every restart" + stable overlay across reboots. |
+| 0.4.1b — Dead-connection pruning | done | `Connection.dead: atomic.Value(bool)` set via `defer` on accept-loop exit; `P2PNode.pruneDeadConnections()` (two-phase reaper) called from manage tick. Manage tick moved BEFORE the connectionCount gate (otherwise dead conns inflated the count and kept the dialer asleep). `connectionCount` / `closestConnectionTo` / `connectionsSortedByDistance` / `handlePeersBee` all filter dead. |
+| 0.4.1c — SOC validation | done | New `src/soc.zig`. Retrieval tries CAC first then SOC; mismatch returns `ChunkAddressMismatch` (was: pass-through unverified). Non-obvious EIP-191 wrinkle: bee's `crypto.Recover` applies the prefix internally, so signature is over `keccak256("\x19Ethereum Signed Message:\n32" ‖ keccak256(id ‖ inner_addr))`. Tested against bee's `pkg/soc/soc_test.go` golden vector. |
 |  | | |
 | **0.5.0 — retrieval-maturity** | | **Read-side feature complete; estimate ~10 work-weeks FTE** |
 | 0.5a — Local flat-file chunk store (basic LRU) | not started | `~/.zigbee/store/<hex_first_2>/<hex>` with atomic write. Foundation for 0.6 staging; useful in 0.5 as retrieval cache. ~1 week. |
