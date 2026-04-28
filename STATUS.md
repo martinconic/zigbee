@@ -4,9 +4,100 @@
 **Date:** 2026-04-28
 **Tests:** 62/62 unit tests pass (`zig build test --summary all`)
 **Source size:** ~7,900 lines of Zig across 27 files in `zigbee/src/`
+**Repository:** https://github.com/martinconic/zigbee (public, BSD-3-Clause)
 **Live status against bee:** verified end-to-end against a local bee
 (`bee/v2.7.2-rc1`, sepolia testnet config) and against the public
 testnet bootnode at `167.235.96.31:32491`.
+
+---
+
+## ⚓ Resumption checkpoint
+
+Single-page guide for picking the project up cold. If a session crashes,
+your machine reboots, or you come back in a week — read this section
+first.
+
+### Where everything lives
+
+| Thing | Path / URL |
+|---|---|
+| **Repo (local)** | `/home/calin/work/swarm/bee-clients/zigbee` |
+| **Repo (GitHub)** | https://github.com/martinconic/zigbee |
+| **Default branch** | `main` (in sync with `origin/main`) |
+| **Latest tag** | `v0.4.0` |
+| **Bee source we cross-reference** | `/home/calin/work/swarm/dev/bee` (Go) |
+| **Spec PDFs** | `/home/calin/work/swarm/bee-clients/docs/{swarm_protocol_spec.pdf, the-book-of-swarm-2.pdf}` |
+| **Local bee binary** | `/tmp/bee` (testnet config: `/home/calin/work/swarm/bee-clients/testnet.yaml`) |
+| **Test stamp batch (already paid for)** | `81443226e94a19784a40ec3d67f019bf17f22e7d1903d21a915d9e35e5fa8430` |
+
+### Smoke test in one command (verifies everything still works)
+
+```bash
+cd /home/calin/work/swarm/bee-clients/zigbee
+zig build test --summary all   # expect: 62/62 tests passed
+```
+
+### What's done (per-release)
+
+- **0.1** — single-chunk retrieval over forwarding-Kademlia. CLI:
+  `zigbee retrieve <hex> -o file`. ([RELEASE_NOTES_0.1.md](RELEASE_NOTES_0.1.md))
+- **0.3** — daemon mode, multi-peer connection management with retry/
+  backoff and a manage tick, spec §1.5 origin retry, 30 s per-attempt
+  timeout, chunk-tree joiner for multi-chunk files, mantaray manifest
+  walker for `/bzz/<ref>` (default-document resolution).
+  ([RELEASE_NOTES_0.3.md](RELEASE_NOTES_0.3.md))
+- **0.4** — bee-compatible read-only HTTP API: `/health`,
+  `/readiness`, `/node` (`beeMode: ultra-light`), `/addresses`,
+  `/peers`, `/topology`, `/chunks/<addr>`, `/bytes/<ref>`,
+  `/bzz/<ref>`, `/bzz/<ref>/<path>` — drop-in for bee's read-only
+  REST surface, byte-identical responses on the storage endpoints.
+  ([RELEASE_NOTES_0.4.md](RELEASE_NOTES_0.4.md))
+
+### What's open / pending (in priority order)
+
+1. **Discussion paused mid-air:** *embedded + in-browser targets.*
+   User said: *"I would want to investigate the possibility of making
+   zigbee appropriate for embedded and in-browser client. Let's update
+   the docs first and we'll talk after."* Docs were updated (release
+   modes table now in `README.md` + `USAGE.md`); discussion not yet
+   resumed. **When the user pings about this, the relevant questions
+   are sketched in `~/.claude/projects/-home-calin-work-swarm-bee-clients/memory/project_zigbee_targets.md`.**
+2. **Phase 6 — SWAP cheques (off-chain BZZ payment).** This is the
+   single thing in front of arbitrary-large-file retrieval. Without
+   it, bee's per-peer disconnect threshold (`apply debit: disconnect
+   threshold exceeded` after ~25–30 chunks) caps unpaid retrieval.
+   See `RELEASE_NOTES_0.4.md` "What's still in front of arbitrarily-
+   large file retrieval" + `PLAN.md` Phase 6.
+3. **Phase 7c/d — SOC validation + encrypted-chunk references.**
+   Currently SOC chunks pass through with a logged CAC mismatch; the
+   joiner's span ceiling catches the SOC-fed-as-CAC mistake. Encrypted
+   refs (refLength = 64) aren't handled at all.
+4. **Phase 8 — local chunk store** (flat-file by hex prefix). Lets
+   retrieved chunks survive restarts; lets us serve as a forwarder
+   later.
+5. **Task #9 — strip noisy debug prints from handshake hot path.**
+   Cosmetic; the per-attempt logs are still useful for now.
+6. **Dead-connection pruning.** When bee disconnects us
+   (`disconnect threshold exceeded`), the dead `Connection` stays
+   in `node.connections`. Subsequent retrievals fail fast with
+   `BrokenPipe` and iteration moves on — not a correctness bug, but
+   memory leaks over a long-running daemon.
+
+### Conventions / preferences observed in this project
+
+- License: **BSD-3-Clause** (matches bee). Vendored libsecp256k1 is MIT.
+- Vendor strategy: `vendor/secp256k1/` is the upstream tree with `.git`
+  stripped, pinned to commit `ea174fe045e1832548cd3b7090958afe9573ad2b`
+  of `bitcoin-core/secp256k1`. Provenance in `vendor/README.md`.
+- Recommended production build: **`zig build -Doptimize=ReleaseSafe`**
+  (~6 MB, safety checks on). `ReleaseSmall` (~1.4 MB) is flagged for
+  the upcoming embedded + in-browser work.
+- Docs are split: `README.md` (overview + TL;DR), `USAGE.md`
+  (cookbook), `ARCHITECTURE.md` (model + threading + accounting wall),
+  `PLAN.md` (multi-phase roadmap), `STATUS.md` (this file —
+  operational snapshot, the most-likely-to-be-stale).
+- Commit style: subject + body explaining the *why*, not just the
+  *what*. Co-authored-by Claude line OK.
 
 > zigbee dials any TCP-reachable bee → completes Noise XX → opens Yamux →
 > serves libp2p Identify, Ping → completes the bee `/swarm/handshake/14.0.0`
@@ -38,7 +129,8 @@ Zigbee is an **ultra-light Swarm client** — even lighter than bee's `light: tr
 | SOC validation | ❌ (logged, passed through unverified) |
 | SWAP cheque payment | ❌ ⇒ caps unpaid retrieval at ~25–30 chunks per peer |
 | Mantaray manifest walking (default-document) | ✅ — `/bzz/<manifest-ref>` byte-identical to `bee /bzz/<ref>/` |
-| Manifest path lookups (`/bzz/<ref>/<path>` for multi-file) | ⚠️ walker supports it; HTTP route doesn't yet parse the trailing path |
+| Manifest path lookups (`/bzz/<ref>/<path>` for multi-file) | ✅ — HTTP route parses trailing path, walker does the lookup, byte-identical to `bee /bzz/<ref>/<path>` (added in 0.4) |
+| Bee-compatible read-only HTTP API (`/health`, `/node`, `/addresses`, `/peers`, `/topology`, `/chunks`, `/bytes`) | ✅ added in 0.4 — drop-in for bee tools |
 | Encrypted-chunk references | ❌ (refLength=64 not handled) |
 
 In bee's terms zigbee is closer to *no-storer client* than *light node*;
