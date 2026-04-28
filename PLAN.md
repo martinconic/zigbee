@@ -527,10 +527,20 @@ Phase status lives in this file. Update the table when a phase enters
 | 0.5.0 release | not started | RELEASE_NOTES_0.5.md, version bump, tag, GitHub release. |
 |  | | |
 | **0.6.0 — push** | | **Read-write parity at the wire level; ~12 weeks FTE** |
-| 0.6a — Postage stamp parser + verifier + issuer + bucket-index tracking | not started | Reuse existing secp256k1. Issuer signs `keccak256(chunk_addr ‖ batch_id ‖ bucket_index ‖ bucket_count)`. Persist used-bucket state. Batch credential = `{batch_id, key, depth, bucket_depth, valid_until}` JSON blob. ~2.5 weeks. |
-| 0.6b — `/swarm/pushsync/1.3.1` initiator + receipt verification | not started | Mirror retrieval iteration: pick closest peer, send `Delivery{addr, data, stamp}`, read `Receipt{addr, sig, nonce}`, verify. ~2 weeks. |
-| 0.6c — HTTP `POST /bytes` and `POST /bzz` upload API | not started | Raw upload returns CAC root; `/bzz` adds mantaray manifest building. Stamp credential via `Swarm-Postage-Batch-Id` header or default credential. ~2.5 weeks. |
+| 0.6 — design context | — | **Protocol-only push, no on-chain code in zigbee proper.** Users provide a postage *batch credential* (`{batch_id, signing_key, depth, bucket_depth, valid_until}`) acquired by some other tool — bee, a stamp service, a wallet. zigbee uses the credential to *issue* stamps for chunks it pushes. See [`docs/strategy.html` §7](docs/strategy.html#sec-esp32) for the full breakdown. |
+| 0.6a-i — Postage batch loader | not started | Read `{batch_id, key, depth, bucket_depth, valid_until}` from a JSON blob, file, or env var. ~100 lines. |
+| 0.6a-ii — Stamp issuer | not started | `signStamp(batch, chunk_addr, bucket_index)` → 65-byte signature. Trivial — uses existing `identity.signEthereum`. ~50 lines. |
+| 0.6a-iii — Stamp verifier | not started | Recover address from sig, check against batch owner. Useful both for receipts on chunks we *push* (verify the receipt) and for chunks we *receive* (defence-in-depth). Trivial — uses existing `identity.recoverEthereum`. ~50 lines. |
+| 0.6a-iv — Bucket-index tracking + persistence | not started | Each batch has 2^bucket_depth slots per bucket; bee rejects stamps with reused indices, so we have to track usage durably. ~150 lines + persistence. |
+| 0.6b — `/swarm/pushsync/1.3.1` initiator + receipt verification | not started | Mirror retrieval iteration: pick closest peer, send `Delivery{addr, data, stamp}`, read `Receipt{addr, sig, nonce}`, verify against expected storer. ~300 lines. |
+| 0.6c-i — HTTP `POST /bytes` upload API | not started | Accept raw bytes, BMT-split into chunks, push each via pushsync, return CAC root reference. ~250 lines. |
+| 0.6c-ii — HTTP `POST /bzz` upload API + manifest building | not started | Same as `/bytes` plus mantaray manifest construction (single-file vs directory). Stamp credential via `Swarm-Postage-Batch-Id` header or default loaded credential. ~150 lines. |
 | 0.6.0 release | not started | RELEASE_NOTES_0.6.md, version bump, tag. Headline: zigbee can upload AND retrieve given an external batch credential. |
+|  | | |
+| **0.6 — provisioning-pattern catalogue (deployment guidance, not zigbee code)** | reference | Three patterns for getting a batch credential onto a deployed zigbee. None require chain code on the device. Covered in detail at [`docs/strategy.html` §7](docs/strategy.html#sec-esp32). |
+| Pattern A — pre-flash a long-life batch | — | Buy batch with bee on a laptop, export `{batch_id, key, …}` blob, write to NVS / config file at deploy time. Best for IoT (single device, year-long deployment). |
+| Pattern B — backend stamp service | — | Device fetches credential from an HTTPS endpoint at boot / before each push. Backend holds the batches and possibly buys new ones as they expire. Best for fleets. |
+| Pattern C — per-chunk RPC signing | — | Device sends each chunk address to a backend signing service which returns a stamp signature; device never holds the batch key. Best when device compromise must not compromise the batch. Slow (round-trip per chunk). |
 |  | | |
 | **0.7.0 — embedded** | | **Validate non-server deployment; ~4 weeks ARM, +6 weeks if MCU** |
 | 0.7a — ARM Linux release matrix | not started | Cross-compile vendor/secp256k1 for `arm-linux-gnueabihf` + `aarch64-linux-gnu`. Validate on Pi Zero W. GitHub Actions: static binaries for x86_64/armv7/arm64 Linux on every tag. ~1 week. |
