@@ -510,17 +510,38 @@ Phase status lives in this file. Update the table when a phase enters
 | 5c — Iterate connected peers on retrieval failure | done | Spec §1.5: "If the response message contains a non empty Err field the requesting node closes the stream and then can re-attempt retrieving the chunk from the next peer candidate." Bee's go origin does up to 32 attempts (`maxOriginErrors`). Zigbee now iterates `connectionsSortedByDistance(addr)` on `error.PeerError` / `error.StreamReset`, returning 200 on first success or 502 only after exhausting all candidates. |
 | 5d — Per-attempt retrieval timeout (30 s) | done | Watchdog thread per attempt using `std.Thread.Condition.timedWait`; on timeout calls new `Stream.cancel()` (yamux RST + signal recv/send condvars). Matches bee's `RetrieveChunkTimeout = 30s` in `pkg/retrieval/retrieval.go`. Happy path wakes immediately on `signalDone()`. |
 | 5e — Chunk-tree (joiner) traversal for files >4 KB | done | New `src/joiner.zig`: walks span/payload structure depth-first, leaf if `span ≤ payload.len`, otherwise payload is concatenated 32-byte child addresses (branching factor 128). Recurses, concatenates leaf payloads. Sanity-bounds span to 1 TiB to detect SOC-fed-as-CAC (`LikelySocReference` error). Wired into `GET /bzz/<reference>`. **Found and fixed a CAC validation bug in `retrieval.zig`** — `bmt.Chunk.init(payload)` defaulted span to `payload.len`; for intermediate chunks the real span is the total subtree size. Live verified: 1500 B + 10 000 B byte-identical round-trips through a local bee. |
-| 6 — SWAP cheques (off-chain BZZ payment) | **next** | Without SWAP, bee's per-peer disconnect threshold caps unpaid retrieval at ~25–30 chunks per peer (~100 KB). Daemon's multi-peer iteration multiplies this by `--max-peers` but it's still finite. Phase 6 implements `/swarm/swap/1.0.0/swap` cheque exchange + chequebook contract calls over Ethereum RPC. |
 | 7a — Manifest gotcha docs | done | README + USAGE.md call out the bee `/bytes` vs `/bzz` distinction and the manifest indirection. |
-| 7b — Mantaray manifest walker | **done — zigbee 0.3** ✅ | `src/mantaray.zig` implements XOR de-obfuscation, v0.1/v0.2 header parse, fork iteration with metadata-on-fork JSON decode, and `lookup` + `resolveDefaultFile` matching bee's `bzz.go` flow (read root `"/"` fork's `website-index-document` metadata → look up that suffix from root → return matched node's entry). Wired into `/bzz/<ref>` with auto-detection: if root chunk has mantaray header, walk it; else treat as raw CAC tree. **Verified live: `zigbee /bzz/<manifest-ref>` byte-identical to `bee /bzz/<ref>/` (2742-byte README on local bee).** Tagged 0.3 — see [`RELEASE_NOTES_0.3.md`](RELEASE_NOTES_0.3.md). |
-| 8 — Bee-compatible read-only HTTP API | **done — zigbee 0.4** ✅ | `/health`, `/readiness`, `/node` (`beeMode: ultra-light`), `/addresses` (overlay/eth/publicKey/pssPublicKey), `/peers` reshape to bee shape `{"peers":[{"address":"...","fullNode":bool}]}`, `/topology` (Kademlia bin populations), `/chunks/<addr>` (raw chunk = span ‖ payload, `binary/octet-stream`), `/bytes/<ref>` (joiner without manifest detection — matches `bee POST /bytes` ↔ `bee GET /bytes/<ref>` round-trip), `/bzz/<ref>/<path>` (manifest path lookup via `mantaray.lookup`). All four storage endpoints verified byte-identical to bee on the same local upload. See [`RELEASE_NOTES_0.4.md`](RELEASE_NOTES_0.4.md). |
-| 7c — SOC validation | not started | Verify Single-Owner Chunks instead of pass-through. |
-| 7d — Encrypted-chunk references | not started | refLength = 64; second 32 bytes are the decryption key. |
-| 7e — `/bzz/<ref>/<path>` HTTP routing | not started | Walker already supports paths; just need to parse the trailing slash + path component out of the HTTP request and feed it to `mantaray.lookup`. |
-| 8 — Local chunk store | not started | Flat-file store keyed by hex prefix; LRU cache. Lets retrieved chunks survive restarts; lets us serve `/swarm/retrieval/...` *as* a forwarder later. |
-| 9 — Pushsync `/swarm/pushsync/1.3.1` + postage stamps | not started | Push a chunk into the network. Requires postage stamps (accept stamp blob on CLI for tests; later, on-chain integration). |
-| 10 — Pullsync, status, pingpong | not started | The remaining read-side application protocols. |
-| 11+ — Full node (Eth RPC, postage issuance, redistribution game) | deferred | Out of scope for the immediate roadmap. |
+| 7b — Mantaray manifest walker | **done — zigbee 0.3** ✅ | `src/mantaray.zig` implements XOR de-obfuscation, v0.1/v0.2 header parse, fork iteration with metadata-on-fork JSON decode, and `lookup` + `resolveDefaultFile` matching bee's `bzz.go` flow. Verified byte-identical to `bee /bzz/<ref>/`. See [`RELEASE_NOTES_0.3.md`](RELEASE_NOTES_0.3.md). |
+| 8 — Bee-compatible read-only HTTP API | **done — zigbee 0.4** ✅ | `/health`, `/readiness`, `/node` (`beeMode: ultra-light`), `/addresses`, `/peers`, `/topology`, `/chunks/<addr>`, `/bytes/<ref>`, `/bzz/<ref>/<path>`. All four storage endpoints verified byte-identical to bee. See [`RELEASE_NOTES_0.4.md`](RELEASE_NOTES_0.4.md). |
+| 9 — Strategy lock-in | **done — 2026-04-28** ✅ | Strategic conversation following 0.4 release. Roadmap agreed: 0.5 retrieval-maturity → 0.6 push → 0.7 embedded → 0.8+ browser. Chain integration treated as per-target outer ring (browser via wallet, server via own RPC, embedded via pre-flashed credential). Captured in [`docs/strategy.html`](docs/strategy.html). |
+|  | | |
+| **0.4.1 patch (in flight)** | | **3 small wins shipped together as a tag** |
+| 0.4.1a — Persistent libp2p identity | next | Save secp256k1 key to `~/.zigbee/identity.key` (0600 perms) on first run; load on every subsequent run. Fixes "fresh debt counter at bee on every restart". 1–2 days. |
+| 0.4.1b — Dead-connection pruning | not started | Remove `Connection` from `node.connections` when its accept-thread exits. Closes a memory leak in long-running daemons. 2–3 days. |
+| 0.4.1c — SOC validation | not started | Verify Single-Owner Chunks via `keccak256(id ‖ owner_eth_address)` instead of pass-through. Required prep for reading feeds. 3–5 days. |
+|  | | |
+| **0.5.0 — retrieval-maturity** | | **Read-side feature complete; estimate ~10 work-weeks FTE** |
+| 0.5a — Local flat-file chunk store (basic LRU) | not started | `~/.zigbee/store/<hex_first_2>/<hex>` with atomic write. Foundation for 0.6 staging; useful in 0.5 as retrieval cache. ~1 week. |
+| 0.5b — Encrypted-chunk references (`refLength = 64`) | not started | Refs carry 32B addr ‖ 32B sym key. Joiner + mantaray walker honour 64-byte refs and decrypt payloads with the per-ref key. ~2 weeks. |
+| 0.5c — SWAP cheques (issue-only, no on-chain cashing) | not started | **The headline of 0.5.** `/swarm/swap/1.0.0/swap` protocol; we issue cheques to bee peers when our cumulative debt crosses bee's announced threshold. Receive cheques but defer cashing on-chain to 1.0. Unblocks unlimited retrieval per peer. ~4–5 weeks. |
+| 0.5.0 release | not started | RELEASE_NOTES_0.5.md, version bump, tag, GitHub release. |
+|  | | |
+| **0.6.0 — push** | | **Read-write parity at the wire level; ~12 weeks FTE** |
+| 0.6a — Postage stamp parser + verifier + issuer + bucket-index tracking | not started | Reuse existing secp256k1. Issuer signs `keccak256(chunk_addr ‖ batch_id ‖ bucket_index ‖ bucket_count)`. Persist used-bucket state. Batch credential = `{batch_id, key, depth, bucket_depth, valid_until}` JSON blob. ~2.5 weeks. |
+| 0.6b — `/swarm/pushsync/1.3.1` initiator + receipt verification | not started | Mirror retrieval iteration: pick closest peer, send `Delivery{addr, data, stamp}`, read `Receipt{addr, sig, nonce}`, verify. ~2 weeks. |
+| 0.6c — HTTP `POST /bytes` and `POST /bzz` upload API | not started | Raw upload returns CAC root; `/bzz` adds mantaray manifest building. Stamp credential via `Swarm-Postage-Batch-Id` header or default credential. ~2.5 weeks. |
+| 0.6.0 release | not started | RELEASE_NOTES_0.6.md, version bump, tag. Headline: zigbee can upload AND retrieve given an external batch credential. |
+|  | | |
+| **0.7.0 — embedded** | | **Validate non-server deployment; ~4 weeks ARM, +6 weeks if MCU** |
+| 0.7a — ARM Linux release matrix | not started | Cross-compile vendor/secp256k1 for `arm-linux-gnueabihf` + `aarch64-linux-gnu`. Validate on Pi Zero W. GitHub Actions: static binaries for x86_64/armv7/arm64 Linux on every tag. ~1 week. |
+| 0.7b — ESP32-S3 spike (gated) | gated on use case | FreeRTOS + lwIP + Xtensa-cross-compiled libsecp256k1; replace `std.Thread` with `xTaskCreate`; replace GPA with FreeRTOS pool. Goal: retrieval over WebSocket on ESP32-S3 dev board. ~4 weeks; do only if there's a customer. |
+| 0.7.0 release | not started | RELEASE_NOTES_0.7.md, version bump, tag. |
+|  | | |
+| **0.8+ — in-browser** | revisit after 0.7 | Major decisions to settle first: secp256k1 strategy (pure-Zig project vs Emscripten vs JS FFI to noble-secp256k1), transport abstraction, async event loop, Service Worker, MetaMask bridge for stamp purchase. Reference architecture: weeb-3. ~3–8 weeks once decided. |
+|  | | |
+| **1.0 — full chain integration** | major; deferred | Own Ethereum RPC client + key management + postage contract bindings + on-chain stamp purchase + on-chain cheque cashing. The "approaches Go-bee parity" line. Multi-month project; only do if there's demand from operators who specifically want a non-Go full node. |
+|  | | |
+| **Future** — pullsync, redistribution game, full storer mode | deferred | Out of scope for the immediate roadmap. |
 
 ## 10. What survives from the existing scaffold
 

@@ -1,7 +1,9 @@
 # zigbee — operational status snapshot
 
 **Release:** 0.4 — bee-compatible read-only HTTP API ([release notes](RELEASE_NOTES_0.4.md), preceded by [0.3 release notes](RELEASE_NOTES_0.3.md))
-**Date:** 2026-04-28
+**Next milestone:** 0.4.1 patch (persistent identity + dead-conn pruning + SOC validation), then 0.5.0 (retrieval-maturity, headlined by SWAP)
+**Strategy reference:** [`docs/strategy.html`](docs/strategy.html) — locked-in roadmap from 2026-04-28
+**Date last refreshed:** 2026-04-28
 **Tests:** 62/62 unit tests pass (`zig build test --summary all`)
 **Source size:** ~7,900 lines of Zig across 27 files in `zigbee/src/`
 **Repository:** https://github.com/martinconic/zigbee (public, BSD-3-Clause)
@@ -53,35 +55,72 @@ zig build test --summary all   # expect: 62/62 tests passed
   REST surface, byte-identical responses on the storage endpoints.
   ([RELEASE_NOTES_0.4.md](RELEASE_NOTES_0.4.md))
 
-### What's open / pending (in priority order)
+### What's open / pending (development plan locked in 2026-04-28)
 
-1. **Discussion paused mid-air:** *embedded + in-browser targets.*
-   User said: *"I would want to investigate the possibility of making
-   zigbee appropriate for embedded and in-browser client. Let's update
-   the docs first and we'll talk after."* Docs were updated (release
-   modes table now in `README.md` + `USAGE.md`); discussion not yet
-   resumed. **When the user pings about this, the relevant questions
-   are sketched in `~/.claude/projects/-home-calin-work-swarm-bee-clients/memory/project_zigbee_targets.md`.**
-2. **Phase 6 — SWAP cheques (off-chain BZZ payment).** This is the
-   single thing in front of arbitrary-large-file retrieval. Without
-   it, bee's per-peer disconnect threshold (`apply debit: disconnect
-   threshold exceeded` after ~25–30 chunks) caps unpaid retrieval.
-   See `RELEASE_NOTES_0.4.md` "What's still in front of arbitrarily-
-   large file retrieval" + `PLAN.md` Phase 6.
-3. **Phase 7c/d — SOC validation + encrypted-chunk references.**
-   Currently SOC chunks pass through with a logged CAC mismatch; the
-   joiner's span ceiling catches the SOC-fed-as-CAC mistake. Encrypted
-   refs (refLength = 64) aren't handled at all.
-4. **Phase 8 — local chunk store** (flat-file by hex prefix). Lets
-   retrieved chunks survive restarts; lets us serve as a forwarder
-   later.
-5. **Task #9 — strip noisy debug prints from handshake hot path.**
-   Cosmetic; the per-attempt logs are still useful for now.
-6. **Dead-connection pruning.** When bee disconnects us
-   (`disconnect threshold exceeded`), the dead `Connection` stays
-   in `node.connections`. Subsequent retrievals fail fast with
-   `BrokenPipe` and iteration moves on — not a correctness bug, but
-   memory leaks over a long-running daemon.
+The strategic conversation following the 0.4 release ended with an
+agreed four-milestone roadmap. Captured in detail at
+[`docs/strategy.html`](docs/strategy.html) (single self-contained
+HTML page, opens in any browser); the per-task list lives in
+[`PLAN.md`](PLAN.md) §9.
+
+**Right now the next concrete step is the 0.4.1 patch — three small
+quality-of-life wins shipped as a tag, in this order:**
+
+1. **0.4.1a — Persistent libp2p identity** *(1–2 days; pick this up first)*
+   Save secp256k1 key to `~/.zigbee/identity.key` on first run; load
+   on every subsequent run. Means bee's per-peer accounting state
+   stops resetting on every zigbee restart. Independent of
+   everything else.
+2. **0.4.1b — Dead-connection pruning** *(2–3 days)*
+   Remove `Connection` from `node.connections` when its
+   accept-thread exits. Closes a memory leak in long-running
+   daemons.
+3. **0.4.1c — SOC validation** *(3–5 days)*
+   Verify Single-Owner Chunks via
+   `keccak256(id ‖ owner_eth_address)` instead of pass-through.
+   Required prep for reading feeds.
+
+**Then 0.5.0 — retrieval-maturity** (~10 work-weeks FTE):
+
+4. Local flat-file chunk store (basic LRU). Foundation for 0.6.
+5. Encrypted-chunk references (`refLength = 64`).
+6. **SWAP cheques (issue-only, no on-chain cashing)** — the headline
+   of 0.5. Unblocks unlimited retrieval per peer. ~4–5 weeks alone.
+
+**Then 0.6.0 — push** (~12 weeks FTE):
+
+7. Postage stamp parser + verifier + issuer + bucket-index tracking.
+8. `/swarm/pushsync/1.3.1` initiator + receipt verification.
+9. HTTP `POST /bytes`, `POST /bzz` upload API (with manifest building).
+
+**Then 0.7.0 — embedded** (~4 weeks ARM Linux):
+
+10. ARM Linux release matrix (cross-compile libsecp256k1 for armv7
+    + arm64; validate on Pi Zero; GitHub Actions release artifacts).
+11. *(Gated)* ESP32-S3 spike. Only if there's a concrete IoT use
+    case to justify ~4 weeks of bare-metal work.
+
+**Then 0.8+ — in-browser** *(deferred decision; revisit after 0.7)*:
+
+12. wasm32-freestanding via WebSocket; secp256k1 strategy decided
+    (likely JS FFI to `noble-secp256k1` for v1); MetaMask bridge for
+    stamp purchase. Reference architecture: weeb-3.
+
+**Then 1.0 — full chain integration** *(major; defer until demand)*:
+
+13. Own Ethereum RPC client + key management + on-chain stamp
+    purchase + on-chain cheque cashing. The "approaches Go-bee
+    parity" line.
+
+### Smaller pending items not on the milestone path
+
+- **Task #9** — strip noisy debug prints from handshake hot path.
+  Cosmetic; the per-attempt logs are still useful for development.
+- **`/pingpong/<peer>` HTTP endpoint** — bee has it. We have a Ping
+  responder; needs an initiator + an HTTP route. ~30 lines.
+- **Graceful shutdown.** Daemon currently runs until SIGKILL; on
+  exit the TCP RST leaves bee with a "broadcast failed" log line.
+  Cosmetic.
 
 ### Conventions / preferences observed in this project
 
