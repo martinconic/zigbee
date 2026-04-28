@@ -56,7 +56,16 @@ pub const Connection = struct {
     peer_libp2p_key_type: u64,
 
     accept_thread: ?std.Thread = null,
+    /// Set by the parent (P2PNode.deinit) to ask the accept loop to
+    /// exit cleanly.
     shutdown_flag: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+    /// Set by the accept loop itself when it exits — either because
+    /// `shutdown_flag` was raised (clean teardown) or because the
+    /// underlying yamux session ended unexpectedly (peer disconnected,
+    /// TCP RST, accounting kick, etc.). The parent's manage tick
+    /// scans for `dead == true` connections and prunes them
+    /// (closes 0.4.1b memory leak).
+    dead: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
 
     /// Dials `ip:port`, runs the full upstream stack, returns a fully
     /// established Connection. Caller owns the result; call `deinit` to
@@ -200,6 +209,10 @@ pub const Connection = struct {
     }
 
     fn runAcceptLoop(self: *Connection, ctx: *anyopaque, handler: StreamHandler) void {
+        // Whichever path takes us out of the loop, mark this Connection
+        // dead so the parent's prune cycle picks it up.
+        defer self.dead.store(true, .release);
+
         while (!self.shutdown_flag.load(.acquire)) {
             const stream = self.session.accept() catch |e| {
                 if (!self.shutdown_flag.load(.acquire)) {
@@ -211,6 +224,13 @@ pub const Connection = struct {
             };
             handler(ctx, self, stream);
         }
+    }
+
+    /// True iff the accept thread has exited (peer disconnected, TCP
+    /// reset, or clean shutdown). Caller's parent should remove this
+    /// Connection from its tracking list and call `deinit`.
+    pub fn isDead(self: *Connection) bool {
+        return self.dead.load(.acquire);
     }
 
     /// Open a new outbound stream on this connection's Yamux session.

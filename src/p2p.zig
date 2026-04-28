@@ -123,7 +123,9 @@ pub const P2PNode = struct {
     }
 
     /// Returns the active connection whose peer-overlay is closest (by XOR
-    /// distance) to `target`. null if we have no active connections.
+    /// distance) to `target`. Skips connections whose accept thread has
+    /// exited (`isDead()`) — those will be reaped by the next manage tick.
+    /// Returns null if there are no live connections.
     pub fn closestConnectionTo(self: *P2PNode, target: [bzz_address.OVERLAY_LEN]u8) ?*Connection {
         self.connections_mtx.lock();
         defer self.connections_mtx.unlock();
@@ -132,6 +134,7 @@ pub const P2PNode = struct {
         var best: ?*Connection = null;
         var best_distance: [bzz_address.OVERLAY_LEN]u8 = [_]u8{0xFF} ** bzz_address.OVERLAY_LEN;
         for (self.connections.items) |c| {
+            if (c.isDead()) continue;
             var d: [bzz_address.OVERLAY_LEN]u8 = undefined;
             for (c.peer_overlay, target, 0..) |x, y, i| d[i] = x ^ y;
             if (std.mem.order(u8, &d, &best_distance) == .lt) {
@@ -142,9 +145,11 @@ pub const P2PNode = struct {
         return best;
     }
 
-    /// Returns all active connections, sorted ascending by XOR distance from
-    /// each peer's overlay to `target` — i.e. closest first. Caller owns the
-    /// returned slice.
+    /// Returns all *live* connections, sorted ascending by XOR distance
+    /// from each peer's overlay to `target` — closest first. Dead
+    /// connections (accept thread already exited) are filtered out so
+    /// retrieval iteration doesn't waste an attempt on a guaranteed
+    /// `BrokenPipe`. Caller owns the returned slice.
     pub fn connectionsSortedByDistance(
         self: *P2PNode,
         allocator: std.mem.Allocator,
@@ -152,8 +157,22 @@ pub const P2PNode = struct {
     ) ![]*Connection {
         self.connections_mtx.lock();
         defer self.connections_mtx.unlock();
-        const out = try allocator.alloc(*Connection, self.connections.items.len);
-        @memcpy(out, self.connections.items);
+
+        // First pass: count live connections so we can allocate the
+        // exact slice (instead of allocating items.len and shrinking).
+        var live_count: usize = 0;
+        for (self.connections.items) |c| {
+            if (!c.isDead()) live_count += 1;
+        }
+
+        const out = try allocator.alloc(*Connection, live_count);
+        var idx: usize = 0;
+        for (self.connections.items) |c| {
+            if (c.isDead()) continue;
+            out[idx] = c;
+            idx += 1;
+        }
+
         const Ctx = struct {
             t: [bzz_address.OVERLAY_LEN]u8,
             fn lessThan(ctx: @This(), a: *Connection, b: *Connection) bool {
@@ -168,10 +187,18 @@ pub const P2PNode = struct {
         return out;
     }
 
+    /// Count of *live* connections (filters out connections whose
+    /// accept thread has exited). Used by the dialer to decide
+    /// whether to look for new peers — counting dead conns would
+    /// make the dialer think we're full and never re-fill.
     pub fn connectionCount(self: *P2PNode) usize {
         self.connections_mtx.lock();
         defer self.connections_mtx.unlock();
-        return self.connections.items.len;
+        var n: usize = 0;
+        for (self.connections.items) |c| {
+            if (!c.isDead()) n += 1;
+        }
+        return n;
     }
 
     pub fn isConnectedToOverlay(self: *P2PNode, overlay: [bzz_address.OVERLAY_LEN]u8) bool {
@@ -188,6 +215,49 @@ pub const P2PNode = struct {
     }
     pub fn peersUnlock(self: *P2PNode) void {
         self.peers_mtx.unlock();
+    }
+
+    /// Walk `connections`, remove any whose accept-thread has exited
+    /// (yamux session ended → peer disconnected, TCP reset, accounting
+    /// kick, etc.), and `deinit` them. Two-phase to avoid holding the
+    /// connections lock across a potentially-blocking `Connection.deinit`
+    /// (which joins yamux reader + accept threads).
+    ///
+    /// Closes the memory leak from before 0.4.1: previously, dead
+    /// connections accumulated in `node.connections` indefinitely;
+    /// retrievals against them failed fast with `BrokenPipe` and the
+    /// origin-retry loop moved on, but the Connection objects + their
+    /// underlying TCP/Noise/Yamux structs were never freed.
+    pub fn pruneDeadConnections(self: *P2PNode) !void {
+        // Phase 1: under the lock, identify dead connections and
+        // detach them from the tracking list.
+        var to_deinit = std.ArrayList(*Connection){};
+        defer to_deinit.deinit(self.allocator);
+
+        self.connections_mtx.lock();
+        var i: usize = 0;
+        while (i < self.connections.items.len) {
+            const c = self.connections.items[i];
+            if (c.isDead()) {
+                try to_deinit.append(self.allocator, c);
+                _ = self.connections.swapRemove(i);
+                // Don't advance i — swapRemove dropped a (possibly
+                // live) connection from the tail into slot i.
+            } else {
+                i += 1;
+            }
+        }
+        self.connections_mtx.unlock();
+
+        // Phase 2: deinit outside the lock. Each `c.deinit()` joins
+        // the (already-exited) accept thread + the yamux reader.
+        for (to_deinit.items) |c| {
+            std.debug.print(
+                "[prune] reaping dead connection: peer {s}\n",
+                .{std.fmt.bytesToHex(c.peer_overlay, .lower)},
+            );
+            c.deinit();
+        }
     }
 
     /// Per-attempt timeout matching bee's RetrieveChunkTimeout.
@@ -543,19 +613,31 @@ fn runHiveDialerInner(ctx: *DialerCtx) !void {
     var last_manage_tick: i128 = 0;
 
     while (true) {
-        if (ctx.node.connectionCount() >= ctx.max_peers) {
-            std.Thread.sleep(2 * std.time.ns_per_s);
-            continue;
-        }
-
-        // Manage tick: every MANAGE_TICK_NS, requeue all unconnected peers
-        // from the peer table so a quiet hive doesn't leave us stranded with
-        // candidates we never got around to trying. Bee's discovery does the
-        // analogous thing in its kademlia manage loop.
+        // Manage tick — runs FIRST, before the connectionCount gate,
+        // because dead connections inflate the count and would
+        // otherwise prevent the prune from ever firing.
+        // Two housekeeping jobs every MANAGE_TICK_NS:
+        //   1. Reap connections whose accept thread has exited (peer
+        //      disconnected, accounting kicked us, TCP reset, …).
+        //      Frees the underlying TCP+Noise+Yamux structs.
+        //   2. Re-queue every still-unconnected peer in the table so
+        //      a quiet hive doesn't leave us stranded with candidates
+        //      we never got around to trying. Bee's discovery does
+        //      the analogous thing in its kademlia manage loop.
         const now = std.time.nanoTimestamp();
         if (now - last_manage_tick > @as(i128, MANAGE_TICK_NS)) {
             last_manage_tick = now;
+            ctx.node.pruneDeadConnections() catch {};
             requeueUnconnectedPeers(ctx.node) catch {};
+        }
+
+        // After the manage tick: if we already have enough live
+        // connections, idle until next tick. (`connectionCount`
+        // filters dead connections, so the prune above will have
+        // brought the count down if there were any dead.)
+        if (ctx.node.connectionCount() >= ctx.max_peers) {
+            std.Thread.sleep(2 * std.time.ns_per_s);
+            continue;
         }
 
         const candidate = ctx.node.dequeueHiveCandidate() orelse {
@@ -1038,8 +1120,14 @@ fn handlePeersBee(node: *P2PNode, stream: net.Stream) !void {
 
     try body.appendSlice(node.allocator, "{\"peers\":[");
     node.connections_mtx.lock();
-    for (node.connections.items, 0..) |c, i| {
-        if (i > 0) try body.append(node.allocator, ',');
+    var first = true;
+    for (node.connections.items) |c| {
+        // Skip connections whose accept thread has exited; they're
+        // pending reaping by the next manage tick. Reporting them as
+        // "connected" would mislead bee tools polling /peers.
+        if (c.isDead()) continue;
+        if (!first) try body.append(node.allocator, ',');
+        first = false;
         try body.appendSlice(node.allocator, "{\"address\":\"");
         try writeHex(&body, node.allocator, &c.peer_overlay);
         try body.appendSlice(node.allocator, "\",\"fullNode\":");
