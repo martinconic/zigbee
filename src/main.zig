@@ -317,6 +317,7 @@ test {
     _ = @import("bzz_address.zig");
     _ = @import("peer_table.zig");
     _ = @import("retrieval.zig");
+    _ = @import("soc.zig");
     _ = @import("joiner.zig");
     _ = @import("mantaray.zig");
     _ = @import("connection.zig");

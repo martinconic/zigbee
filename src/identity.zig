@@ -503,6 +503,97 @@ pub fn recoverEthereum(data: []const u8, sig: [65]u8, pubkey_out: *[33]u8) !void
     if (out_len != 33) return error.PubkeySerializationFailed;
 }
 
+/// Recover the 20-byte Ethereum address from a 65-byte (r||s||v) signature
+/// over the *raw* 32-byte `digest` — i.e., no EIP-191 prefix is applied.
+/// Used for Swarm SOC validation: bee signs `keccak256(id ‖ inner_addr)`
+/// directly, with `v ∈ {27,28}` (occasionally {29,30} after eip-2098 expansion).
+pub fn recoverEthAddrFromDigest(
+    digest: [32]u8,
+    sig: [65]u8,
+    out: *[ETHEREUM_ADDRESS_SIZE]u8,
+) !void {
+    if (sig[64] < 27 or sig[64] > 30) return error.InvalidSignatureFormat;
+    const recid: c_int = @intCast(sig[64] - 27);
+
+    const ctx = secp.secp256k1_context_create(secp.SECP256K1_CONTEXT_VERIFY) orelse return error.SecpContextCreationFailed;
+    defer secp.secp256k1_context_destroy(ctx);
+
+    var rsig: secp.secp256k1_ecdsa_recoverable_signature = undefined;
+    var rs: [64]u8 = undefined;
+    @memcpy(&rs, sig[0..64]);
+    if (secp.secp256k1_ecdsa_recoverable_signature_parse_compact(ctx, &rsig, &rs, recid) != 1) {
+        return error.InvalidSignatureFormat;
+    }
+
+    var pubkey: secp.secp256k1_pubkey = undefined;
+    if (secp.secp256k1_ecdsa_recover(ctx, &pubkey, &rsig, &digest) != 1) {
+        return error.SignatureVerificationFailed;
+    }
+
+    // Serialize uncompressed (65 bytes: 0x04 || X(32) || Y(32)). Eth address
+    // is the last 20 bytes of keccak256(X||Y).
+    var uncompressed: [65]u8 = undefined;
+    var out_len: usize = 65;
+    if (secp.secp256k1_ec_pubkey_serialize(ctx, &uncompressed, &out_len, &pubkey, secp.SECP256K1_EC_UNCOMPRESSED) != 1) {
+        return error.PubkeySerializationFailed;
+    }
+    if (out_len != 65) return error.PubkeySerializationFailed;
+
+    var hash: [32]u8 = undefined;
+    crypto.keccak256(uncompressed[1..65], &hash);
+    @memcpy(out, hash[12..32]);
+}
+
+/// Recover the 20-byte Ethereum address from a 65-byte (r||s||v) signature
+/// produced by an EIP-191 signer over `data`. Convenience wrapper that
+/// computes `keccak256("\x19Ethereum Signed Message:\n{N}" ‖ data)` and
+/// then delegates to `recoverEthAddrFromDigest`. Used by Swarm SOC
+/// validation: bee's `crypto.Recover` applies EIP-191 to the SOC's
+/// `to_sign = keccak256(id ‖ inner_addr)` blob before recovering.
+pub fn recoverEthAddrEip191(
+    data: []const u8,
+    sig: [65]u8,
+    out: *[ETHEREUM_ADDRESS_SIZE]u8,
+) !void {
+    var prefix_buf: [64]u8 = undefined;
+    const prefix = try std.fmt.bufPrint(&prefix_buf, "\x19Ethereum Signed Message:\n{d}", .{data.len});
+
+    var hasher = std.crypto.hash.sha3.Keccak256.init(.{});
+    hasher.update(prefix);
+    hasher.update(data);
+    var digest: [32]u8 = undefined;
+    hasher.final(&digest);
+
+    return recoverEthAddrFromDigest(digest, sig, out);
+}
+
+test "recoverEthAddrFromDigest round-trip" {
+    const id = try Identity.generate();
+    var digest: [32]u8 = undefined;
+    crypto.keccak256("zigbee-soc-digest-roundtrip-test-vector", &digest);
+
+    // Sign the raw digest (NOT EIP-191 — that's the SOC convention).
+    const ctx = secp.secp256k1_context_create(secp.SECP256K1_CONTEXT_SIGN) orelse return error.SecpContextCreationFailed;
+    defer secp.secp256k1_context_destroy(ctx);
+    var rsig: secp.secp256k1_ecdsa_recoverable_signature = undefined;
+    if (secp.secp256k1_ecdsa_sign_recoverable(ctx, &rsig, &digest, &id.private_key, null, null) != 1)
+        return error.SignatureGenerationFailed;
+    var rs: [64]u8 = undefined;
+    var recid: c_int = 0;
+    if (secp.secp256k1_ecdsa_recoverable_signature_serialize_compact(ctx, &rs, &recid, &rsig) != 1)
+        return error.SignatureSerializationFailed;
+    var sig: [65]u8 = undefined;
+    @memcpy(sig[0..64], &rs);
+    sig[64] = @intCast(27 + recid);
+
+    var recovered_eth: [ETHEREUM_ADDRESS_SIZE]u8 = undefined;
+    try recoverEthAddrFromDigest(digest, sig, &recovered_eth);
+
+    var expected_eth: [ETHEREUM_ADDRESS_SIZE]u8 = undefined;
+    id.ethereumAddress(&expected_eth);
+    try std.testing.expectEqualSlices(u8, &expected_eth, &recovered_eth);
+}
+
 test "signEthereum + recoverEthereum round-trip" {
     const id = try Identity.generate();
     const data = "bee-handshake-payload-bytes";

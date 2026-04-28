@@ -13,15 +13,19 @@
 //   message Request  { bytes Addr  = 1; }
 //   message Delivery { bytes Data  = 1; bytes Stamp = 2; string Err = 3; }
 //
-// We content-validate the returned data: address(span_le_u64 || data) must
-// equal the requested address. (Single-Owner Chunks are also valid in bee
-// but we don't implement SOC validation yet — Phase 4 retrieves only CACs.)
+// We content-validate the returned bytes: try CAC first (BMT-derived
+// address), then fall back to SOC validation (`keccak256(id ‖ owner)`).
+// If neither matches the requested address, the peer returned the wrong
+// chunk — surface as `ChunkAddressMismatch` rather than passing the
+// bytes through unverified.
 
 const std = @import("std");
 const yamux = @import("yamux.zig");
 const proto = @import("proto.zig");
 const swarm_proto = @import("swarm_proto.zig");
 const bmt = @import("bmt.zig");
+const soc = @import("soc.zig");
+const identity = @import("identity.zig");
 
 pub const PROTOCOL_ID = "/swarm/retrieval/1.4.0/retrieval";
 const MAX_CHUNK_BYTES: usize = 4096 + 8 + 1024; // ChunkSize + SpanSize + slack
@@ -33,16 +37,27 @@ pub const Error = error{
 };
 
 pub const RetrievedChunk = struct {
-    /// Chunk payload (without the 8-byte span). For a content-addressed
-    /// chunk, hashing this with the span produces `address`.
+    /// Inner payload bytes (no 8-byte span prefix). For a CAC, this is
+    /// the bytes the BMT was computed over. For a SOC, this is the
+    /// payload of the wrapped CAC — i.e., the bytes the SOC's owner
+    /// stored. Callers that don't care about CAC vs SOC just consume
+    /// `data`; callers that do (feed readers, future) inspect `is_soc`.
     data: []u8,
-    /// 8-byte span (data length, little-endian uint64).
+    /// 8-byte span (inner payload length / subtree size, little-endian uint64).
     span: u64,
-    /// 32-byte content address — equal to the address the caller requested.
+    /// 32-byte address — equal to the address the caller requested.
     address: [bmt.HASH_SIZE]u8,
-    /// Allocator-owned stamp blob, possibly empty if the responder didn't
-    /// attach one. We don't validate it yet.
+    /// Allocator-owned stamp blob, possibly empty if the responder
+    /// didn't attach one. Stamp validation is 0.6 work.
     stamp: []u8,
+    /// True iff the chunk validated as a SOC rather than a CAC.
+    is_soc: bool = false,
+    /// SOC identifier (`keccak256(id ‖ owner)` = `address`). Only
+    /// meaningful when `is_soc == true`.
+    soc_id: [soc.ID_SIZE]u8 = [_]u8{0} ** soc.ID_SIZE,
+    /// Recovered SOC owner eth address. Only meaningful when `is_soc == true`.
+    soc_owner: [identity.ETHEREUM_ADDRESS_SIZE]u8 =
+        [_]u8{0} ** identity.ETHEREUM_ADDRESS_SIZE,
 
     _allocator: std.mem.Allocator,
 
@@ -104,48 +119,69 @@ pub fn request(
     }
     if (data.len < bmt.SPAN_SIZE) return Error.EmptyDelivery;
 
-    // The wire `Data` field carries `span (8 LE bytes) || chunk_data`.
-    const span = std.mem.readInt(u64, data[0..bmt.SPAN_SIZE], .little);
-    const payload = data[bmt.SPAN_SIZE..];
+    // Try CAC first. The wire `Data` field for a CAC is `span(8) || payload`.
+    // Intermediate chunks of a chunk-tree carry `span = total subtree size`,
+    // not `payload.len`, so we must use the span we read off the wire —
+    // `bmt.Chunk.init` would default to `payload.len` and break intermediates.
+    const cac_span = std.mem.readInt(u64, data[0..bmt.SPAN_SIZE], .little);
+    const cac_payload = data[bmt.SPAN_SIZE..];
 
-    // Validate as a content-addressed chunk: BMT root over the payload,
-    // hashed with the span prefix, must equal the address we asked for.
-    // For intermediate chunks (chunk-tree internal nodes), the span is
-    // the *total subtree size*, NOT `payload.len`, so we must use the
-    // span we read off the wire — `bmt.Chunk.init` would default to
-    // `payload.len` and cause every intermediate to fail CAC validation.
-    //
-    // Swarm also has Single-Owner Chunks (SOCs) where the address is
-    // keccak256(identifier ‖ owner_eth_address); those won't match the
-    // CAC computation regardless. We log SOC candidates and pass the
-    // bytes through unverified for now (Phase 4 MVP). Full SOC
-    // verification is a future phase.
-    var chunk = bmt.Chunk.init(payload);
-    chunk.span = span;
-    var derived: [bmt.HASH_SIZE]u8 = undefined;
-    try chunk.address(&derived);
-    const cac_match = std.mem.eql(u8, &derived, &chunk_address);
-    if (!cac_match) {
-        std.debug.print(
-            "[retrieval] CAC mismatch (likely a SOC): requested={s} cac_hash={s}\n" ++
-                "[retrieval] returning bytes unverified — implement SOC validation in a later phase\n",
-            .{
-                std.fmt.bytesToHex(chunk_address, .lower),
-                std.fmt.bytesToHex(derived, .lower),
-            },
-        );
+    var cac_match = false;
+    var cac_err_too_large = false;
+    if (cac_payload.len <= bmt.CHUNK_SIZE) {
+        var chunk = bmt.Chunk.init(cac_payload);
+        chunk.span = cac_span;
+        var cac_derived: [bmt.HASH_SIZE]u8 = undefined;
+        chunk.address(&cac_derived) catch {
+            // bmt.Error.ChunkDataTooLarge — fall through to SOC.
+            cac_err_too_large = true;
+        };
+        if (!cac_err_too_large and std.mem.eql(u8, &cac_derived, &chunk_address))
+            cac_match = true;
     }
 
-    // Copy out into caller-owned buffers.
-    const data_owned = try allocator.dupe(u8, payload);
-    errdefer allocator.free(data_owned);
-    const stamp_owned = try allocator.dupe(u8, stamp);
+    if (cac_match) {
+        const data_owned = try allocator.dupe(u8, cac_payload);
+        errdefer allocator.free(data_owned);
+        const stamp_owned = try allocator.dupe(u8, stamp);
+        return RetrievedChunk{
+            .data = data_owned,
+            .span = cac_span,
+            .address = chunk_address,
+            .stamp = stamp_owned,
+            ._allocator = allocator,
+        };
+    }
 
-    return RetrievedChunk{
-        .data = data_owned,
-        .span = span,
-        .address = chunk_address,
-        .stamp = stamp_owned,
-        ._allocator = allocator,
-    };
+    // Try SOC. For a SOC, the wire `Data` field is
+    // `id(32) ‖ sig(65) ‖ span(8) ‖ payload`, and the address the
+    // caller asked for is `keccak256(id ‖ recovered_owner_eth_addr)`.
+    if (soc.parseAndValidate(data, chunk_address)) |s| {
+        const data_owned = try allocator.dupe(u8, s.payload);
+        errdefer allocator.free(data_owned);
+        const stamp_owned = try allocator.dupe(u8, stamp);
+        return RetrievedChunk{
+            .data = data_owned,
+            .span = s.span,
+            .address = chunk_address,
+            .stamp = stamp_owned,
+            .is_soc = true,
+            .soc_id = s.id,
+            .soc_owner = s.owner,
+            ._allocator = allocator,
+        };
+    } else |soc_err| {
+        // Neither CAC nor SOC matches. The peer either corrupted the
+        // bytes or returned a different chunk than we asked for.
+        std.debug.print(
+            "[retrieval] address mismatch for {s}: cac={s} soc_err={any} bytes={d}\n",
+            .{
+                std.fmt.bytesToHex(chunk_address, .lower),
+                if (cac_err_too_large) "(too-large)" else "(no-match)",
+                soc_err,
+                data.len,
+            },
+        );
+        return Error.ChunkAddressMismatch;
+    }
 }
