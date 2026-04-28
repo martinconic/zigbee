@@ -37,6 +37,11 @@ const Args = struct {
     out_path: ?[]const u8 = null,
     api_port: u16 = 9090,
     max_peers: usize = 4,
+    /// Path to the persistent libp2p identity key. Default is computed
+    /// at runtime from $HOME (see `identity.defaultIdentityPath`); the
+    /// magic value `:ephemeral:` means "don't persist; generate fresh
+    /// each run" (the pre-0.4.1 behaviour, useful for testing).
+    identity_file: ?[]const u8 = null,
 };
 
 fn parseArgs(argv: []const []const u8) !Args {
@@ -64,6 +69,10 @@ fn parseArgs(argv: []const []const u8) !Args {
             i += 1;
             if (i >= argv.len) return error.MissingValue;
             a.api_port = try std.fmt.parseInt(u16, argv[i], 10);
+        } else if (std.mem.eql(u8, arg, "--identity-file")) {
+            i += 1;
+            if (i >= argv.len) return error.MissingValue;
+            a.identity_file = argv[i];
         } else if (std.mem.eql(u8, arg, "--max-peers")) {
             i += 1;
             if (i >= argv.len) return error.MissingValue;
@@ -104,6 +113,16 @@ fn printHelp() void {
         \\  --peer ip:port      peer to dial (default 127.0.0.1:1634)
         \\  --network-id N      Swarm network id (default 10 = Sepolia testnet,
         \\                      mainnet = 1)
+        \\  --identity-file P   path to persistent libp2p identity key
+        \\                      (default $HOME/.zigbee/identity.key).
+        \\                      File is created on first run and reused
+        \\                      on every subsequent run — bee's per-peer
+        \\                      accounting state survives restarts.
+        \\                      Mode follows your umask; for strict 0600
+        \\                      use umask 0077 or chmod after first run.
+        \\                      Pass ":ephemeral:" to generate fresh
+        \\                      each run (the pre-0.4.1 behaviour, for
+        \\                      tests).
         \\
         \\subcommands:
         \\  (none)              dial the peer, do the handshake, stay connected
@@ -170,8 +189,18 @@ pub fn main() !void {
     try sample_chunk.address(&sample_chunk_hash);
     std.debug.print("Chunk Hash: {s}\n", .{std.fmt.bytesToHex(sample_chunk_hash, .lower)});
 
-    std.debug.print("Generating Node Identity...\n", .{});
-    const id = try identity.Identity.generate();
+    // Identity + bzz overlay nonce: persistent by default (0.4.1+) —
+    // load from disk if the file exists, otherwise generate a fresh
+    // pair and persist atomically. The file is 64 bytes: 32-byte
+    // libp2p secp256k1 key + 32-byte bzz overlay nonce. Both must
+    // persist together — without the nonce, the overlay changes on
+    // every restart even with the same libp2p key, and bee's
+    // per-peer accounting (keyed on overlay) resets.
+    //
+    // `--identity-file :ephemeral:` generates fresh values each run
+    // (the pre-0.4.1 behaviour, useful for tests).
+    var nonce: [32]u8 = undefined;
+    const id = try resolveIdentity(allocator, args.identity_file, &nonce);
 
     var action: p2p.PostHandshakeAction = .none;
     if (args.subcommand == .retrieve) {
@@ -184,7 +213,7 @@ pub fn main() !void {
         action = .{ .retrieve = .{ .address = addr_bytes, .out_path = args.out_path } };
     }
 
-    var node = try p2p.P2PNode.init(allocator, id, args.network_id);
+    var node = try p2p.P2PNode.init(allocator, id, args.network_id, nonce);
     defer node.deinit();
 
     std.debug.print("Node Overlay Address: {s}\n", .{std.fmt.bytesToHex(node.overlay, .lower)});
@@ -200,6 +229,36 @@ pub fn main() !void {
     }
 
     try node.dial(args.peer_ip, args.peer_port, action);
+}
+
+/// Resolve identity + bzz overlay nonce according to `--identity-file`:
+///   * null              → default `$HOME/.zigbee/identity.key`, persistent.
+///   * `:ephemeral:`     → no persistence; fresh keypair AND fresh
+///                          nonce each run (the pre-0.4.1 behaviour,
+///                          useful for tests that want a clean libp2p
+///                          identity + fresh bee-side debt counter).
+///   * any other string  → use that exact path; persist there.
+///
+/// The `nonce_out` parameter is filled with the 32-byte bzz overlay
+/// nonce — either loaded from disk or freshly randomised.
+fn resolveIdentity(
+    allocator: std.mem.Allocator,
+    override: ?[]const u8,
+    nonce_out: *[32]u8,
+) !identity.Identity {
+    if (override) |p| {
+        if (std.mem.eql(u8, p, ":ephemeral:")) {
+            std.debug.print("[identity] ephemeral mode — generating fresh keypair + nonce (no persistence)\n", .{});
+            std.crypto.random.bytes(nonce_out);
+            return try identity.Identity.generate();
+        }
+        std.debug.print("[identity] using key file: {s}\n", .{p});
+        return try identity.Identity.loadOrCreate(allocator, p, nonce_out);
+    }
+    const default_path = try identity.defaultIdentityPath(allocator);
+    defer allocator.free(default_path);
+    std.debug.print("[identity] using default key file: {s}\n", .{default_path});
+    return try identity.Identity.loadOrCreate(allocator, default_path, nonce_out);
 }
 
 test "basic test" {

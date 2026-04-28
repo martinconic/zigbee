@@ -48,6 +48,68 @@ pub const Identity = struct {
         };
     }
 
+    /// Build an Identity from an already-known private key. Used by
+    /// `loadOrCreate` after reading a key from disk; verifies the
+    /// scalar is valid for secp256k1 and recomputes the public key.
+    pub fn fromPrivateKey(private_key: [32]u8) !Identity {
+        const ctx = secp.secp256k1_context_create(secp.SECP256K1_CONTEXT_NONE) orelse return error.SecpContextCreationFailed;
+        defer secp.secp256k1_context_destroy(ctx);
+
+        if (secp.secp256k1_ec_seckey_verify(ctx, &private_key) != 1) {
+            return error.InvalidPrivateKey;
+        }
+
+        var pubkey_internal: secp.secp256k1_pubkey = undefined;
+        if (secp.secp256k1_ec_pubkey_create(ctx, &pubkey_internal, &private_key) != 1) {
+            return error.SecpPubkeyCreationFailed;
+        }
+
+        var pubkey_serialized: [65]u8 = undefined;
+        var output_len: usize = 65;
+        _ = secp.secp256k1_ec_pubkey_serialize(ctx, &pubkey_serialized, &output_len, &pubkey_internal, secp.SECP256K1_EC_UNCOMPRESSED);
+
+        return Identity{
+            .private_key = private_key,
+            .public_key = pubkey_serialized,
+        };
+    }
+
+    /// Load a persistent identity from `path`, or generate a fresh one
+    /// and atomically write it there if the file doesn't exist.
+    ///
+    /// The file is **64 bytes**: the first 32 are the secp256k1
+    /// private key, the next 32 are the bzz overlay nonce. Both must
+    /// persist across runs — without the nonce, the overlay changes
+    /// every restart even with the same libp2p key, and bee's
+    /// per-peer accounting state (which is keyed on overlay) resets.
+    /// Persisting the libp2p key alone gives no user-visible benefit.
+    ///
+    /// Atomic-write semantics for IoT durability (cross-cutting item
+    /// X2): tempfile → fsync → rename. A power loss mid-write leaves
+    /// the old file or the new one, never a partial / corrupt key.
+    ///
+    /// Returns the Identity. The 32-byte nonce is returned via the
+    /// out-parameter `nonce_out`.
+    pub fn loadOrCreate(
+        allocator: std.mem.Allocator,
+        path: []const u8,
+        nonce_out: *[32]u8,
+    ) !Identity {
+        if (readKeyAndNonce(path)) |kn| {
+            @memcpy(nonce_out, &kn.nonce);
+            return try fromPrivateKey(kn.key);
+        } else |e| switch (e) {
+            error.FileNotFound => {}, // fall through to generation
+            else => return e,
+        }
+
+        // Generate a fresh identity AND a fresh nonce; persist both.
+        const id = try Identity.generate();
+        std.crypto.random.bytes(nonce_out);
+        try writeKeyAndNonceAtomic(allocator, path, id.private_key, nonce_out.*);
+        return id;
+    }
+
     /// Ethereum address: last 20 bytes of keccak256(pubkey[1..65]).
     /// The 0x04 prefix of the uncompressed key is stripped before hashing.
     pub fn ethereumAddress(self: *const Identity, out: *[ETHEREUM_ADDRESS_SIZE]u8) void {
@@ -88,6 +150,93 @@ pub const Identity = struct {
     }
 };
 
+// ---- persistent-identity helpers (file I/O) -------------------------
+
+const KeyAndNonce = struct {
+    key: [32]u8,
+    nonce: [32]u8,
+};
+
+/// Read the 64-byte (key ‖ nonce) blob from `path`. Errors:
+///   error.FileNotFound  — file doesn't exist (caller generates fresh)
+///   error.InvalidKeyFile — file exists but isn't exactly 64 bytes
+fn readKeyAndNonce(path: []const u8) !KeyAndNonce {
+    var file = std.fs.cwd().openFile(path, .{}) catch |e| switch (e) {
+        error.FileNotFound => return error.FileNotFound,
+        else => return e,
+    };
+    defer file.close();
+
+    var buf: [65]u8 = undefined; // 1 byte slack to detect oversize
+    const n = try file.readAll(&buf);
+    if (n != 64) return error.InvalidKeyFile;
+
+    var out: KeyAndNonce = undefined;
+    @memcpy(&out.key, buf[0..32]);
+    @memcpy(&out.nonce, buf[32..64]);
+    return out;
+}
+
+/// Atomically write `key ‖ nonce` (64 bytes) to `path`.
+/// Steps: ensure parent dir exists → write tempfile → fsync → rename.
+/// A power loss mid-write leaves either the old file (rename hadn't
+/// happened) or the new one (rename succeeded) — never partial.
+fn writeKeyAndNonceAtomic(
+    allocator: std.mem.Allocator,
+    path: []const u8,
+    key: [32]u8,
+    nonce: [32]u8,
+) !void {
+    // Ensure the containing directory exists. We don't fight with its
+    // mode — file-level 0o600 is what protects the key.
+    if (std.fs.path.dirname(path)) |dir| {
+        std.fs.cwd().makePath(dir) catch |e| switch (e) {
+            error.PathAlreadyExists => {},
+            else => return e,
+        };
+    }
+
+    const tmp_path = try std.fmt.allocPrint(allocator, "{s}.tmp", .{path});
+    defer allocator.free(tmp_path);
+
+    // Write the temp file (64 bytes: 32-byte key ‖ 32-byte nonce).
+    // File mode is whatever your umask permits (typically 0644 or
+    // 0664). zigbee can't reliably tighten it via std.posix.fchmod
+    // in this Zig version (0.15) — the stdlib treats a few possible
+    // syscall returns as `unreachable` on tmpfs / atypical mounts.
+    // If you want strict 0600 (e.g. multi-user host), set
+    // `umask 0077` before launching, OR
+    // `chmod 600 ~/.zigbee/identity.key` after first run.
+    {
+        var tmp = try std.fs.cwd().createFile(tmp_path, .{ .truncate = true });
+        defer tmp.close();
+        try tmp.writeAll(&key);
+        try tmp.writeAll(&nonce);
+        try tmp.sync();
+    }
+
+    // Atomic rename — POSIX guarantees the target is either fully
+    // old or fully new, never partial.
+    //
+    // For belt-and-braces durability we'd also fsync the containing
+    // directory so the new dirent metadata survives a power loss
+    // immediately after rename, but Zig 0.15's std.posix.fsync
+    // treats a directory fd as `unreachable` (BADF/INVAL/ROFS).
+    // Modern filesystems (ext4, xfs, btrfs, apfs) flush rename
+    // metadata as a side effect, so the missing dir-fsync is at
+    // worst a few-ms-of-power-loss exposure on the very-first run.
+    // For an identity key — generated once and read forever — the
+    // tradeoff is acceptable.
+    try std.fs.cwd().rename(tmp_path, path);
+}
+
+/// Default identity-file path: `$HOME/.zigbee/identity.key`. Caller
+/// owns the returned slice.
+pub fn defaultIdentityPath(allocator: std.mem.Allocator) ![]const u8 {
+    const home = std.posix.getenv("HOME") orelse return error.NoHomeEnv;
+    return try std.fs.path.join(allocator, &.{ home, ".zigbee", "identity.key" });
+}
+
 /// Standalone variant matching bee's NewOverlayFromEthereumAddress.
 pub fn overlayFromEthereumAddress(
     eth_addr: [ETHEREUM_ADDRESS_SIZE]u8,
@@ -100,6 +249,68 @@ pub fn overlayFromEthereumAddress(
     std.mem.writeInt(u64, buf[ETHEREUM_ADDRESS_SIZE..][0..8], network_id, .little);
     @memcpy(buf[ETHEREUM_ADDRESS_SIZE + 8 .. ETHEREUM_ADDRESS_SIZE + 8 + 32], &nonce);
     crypto.keccak256(&buf, out);
+}
+
+test "loadOrCreate: round-trips key + nonce, second call returns the same identity" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(path);
+    const key_path = try std.fs.path.join(allocator, &.{ path, "identity.key" });
+    defer allocator.free(key_path);
+
+    // First call: file doesn't exist → generates + persists.
+    var nonce1: [32]u8 = undefined;
+    const id1 = try Identity.loadOrCreate(allocator, key_path, &nonce1);
+    // Second call: file exists → loads the same key and nonce.
+    var nonce2: [32]u8 = undefined;
+    const id2 = try Identity.loadOrCreate(allocator, key_path, &nonce2);
+
+    try std.testing.expectEqualSlices(u8, &id1.private_key, &id2.private_key);
+    try std.testing.expectEqualSlices(u8, &id1.public_key, &id2.public_key);
+    try std.testing.expectEqualSlices(u8, &nonce1, &nonce2);
+
+    // Sanity: file is exactly 64 bytes (32 key + 32 nonce).
+    var f = try std.fs.cwd().openFile(key_path, .{});
+    defer f.close();
+    const stat = try f.stat();
+    try std.testing.expectEqual(@as(u64, 64), stat.size);
+}
+
+test "loadOrCreate: rejects malformed key file (wrong size)" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const path = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(path);
+    const key_path = try std.fs.path.join(allocator, &.{ path, "bad.key" });
+    defer allocator.free(key_path);
+
+    // Pre-write a 32-byte file (right size for the OLD format, wrong
+    // for the new 64-byte key+nonce format — mainly here to confirm
+    // we reject anything that isn't exactly 64 bytes).
+    {
+        var f = try std.fs.cwd().createFile(key_path, .{});
+        defer f.close();
+        try f.writeAll(&[_]u8{0xAA} ** 32);
+    }
+
+    var nonce: [32]u8 = undefined;
+    try std.testing.expectError(error.InvalidKeyFile, Identity.loadOrCreate(allocator, key_path, &nonce));
+}
+
+test "fromPrivateKey: rejects all-zero scalar (not on the curve)" {
+    const zero: [32]u8 = [_]u8{0} ** 32;
+    try std.testing.expectError(error.InvalidPrivateKey, Identity.fromPrivateKey(zero));
+}
+
+test "fromPrivateKey: round-trips a generated key" {
+    const id1 = try Identity.generate();
+    const id2 = try Identity.fromPrivateKey(id1.private_key);
+    try std.testing.expectEqualSlices(u8, &id1.public_key, &id2.public_key);
 }
 
 test "identity generation" {

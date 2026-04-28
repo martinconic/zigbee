@@ -70,9 +70,13 @@ pub const P2PNode = struct {
         allocator: std.mem.Allocator,
         id: identity.Identity,
         network_id: u64,
+        /// 32-byte bzz overlay nonce. The caller is responsible for
+        /// persistence — see `identity.loadOrCreate` which loads/saves
+        /// it alongside the libp2p key. Without persistence the
+        /// overlay changes every restart and bee's per-peer
+        /// accounting state resets.
+        nonce: [bzz_address.NONCE_LEN]u8,
     ) !P2PNode {
-        var nonce: [bzz_address.NONCE_LEN]u8 = undefined;
-        std.crypto.random.bytes(&nonce);
         var overlay: [bzz_address.OVERLAY_LEN]u8 = undefined;
         id.overlayAddress(network_id, nonce, &overlay);
         return .{
