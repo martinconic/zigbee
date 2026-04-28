@@ -1,0 +1,24 @@
+# Zig build outputs.
+zig-out/
+.zig-cache/
+zig-cache/
+
+# Editor / OS junk.
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
+.idea/
+.vscode/
+
+# Coverage / profiling.
+*.gcno
+*.gcda
+*.profraw
+
+# Local test artifacts (chunks, files we curl down during dev).
+/chunk.bin
+/file.bin
+/myfile.bin
+/out.bin
