@@ -3,15 +3,23 @@
 A Swarm Bee client written in pure Zig. Standalone (no FFI to other libp2p
 stacks), interoperable with the existing Go bee on the live network.
 
+Source: https://github.com/martinconic/zigbee
+
+Requirements: Zig 0.15.x and a C toolchain (for the vendored libsecp256k1).
+
 ## TL;DR — retrieve a file by its Swarm reference
 
-Three commands. Point zigbee at *any* reachable bee (a public bootnode
+Four commands. Point zigbee at *any* reachable bee (a public bootnode
 works) and you can fetch chunks and files by reference, with no peer
 addresses to manage:
 
 ```bash
+# 0. Get the source.
+git clone https://github.com/martinconic/zigbee.git
+cd zigbee
+
 # 1. Build once.
-cd zigbee && zig build
+zig build
 
 # 2. Start the daemon. It dials the --peer node, learns other peers from
 #    bee's hive, auto-dials up to 4 of them, and serves an HTTP API on
