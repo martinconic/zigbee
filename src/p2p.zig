@@ -543,9 +543,16 @@ pub const P2PNode = struct {
     // Daemon mode.
     // --------------------------------------------------------------------
 
+    pub const BootnodeCandidate = struct {
+        ip: []const u8,
+        port: u16,
+    };
+
     pub const DaemonOpts = struct {
-        bootnode_ip: []const u8,
-        bootnode_port: u16,
+        /// Bootstrap candidates, tried in order on initial dial. Must be
+        /// non-empty. With `--peer ip:port` this is a single-element slice;
+        /// with `--bootnode /dnsaddr/<host>` it's the resolved list.
+        bootnodes: []const BootnodeCandidate,
         max_peers: usize = 4,
         api_port: u16 = 9090,
     };
@@ -553,19 +560,39 @@ pub const P2PNode = struct {
     /// Daemon: dial bootnode → as hive entries arrive, dial up to
     /// max_peers from them → serve an HTTP API for retrieval.
     /// Returns cleanly on SIGINT/SIGTERM after joining the dialer worker.
+    ///
+    /// Bootstrap dial strategy: walk `opts.bootnodes` in order; the first
+    /// one whose handshake completes becomes the seed connection. On
+    /// failure the loop logs the error and tries the next candidate. If
+    /// every candidate fails we return `error.AllBootnodesUnreachable`.
     pub fn daemonRun(self: *P2PNode, opts: DaemonOpts) !void {
         try installSignalHandlers();
 
-        const ip4 = parseIpv4(opts.bootnode_ip) orelse return error.InvalidIp;
-        std.debug.print("[daemon] dialing bootnode {s}:{d} (network_id={d})\n", .{ opts.bootnode_ip, opts.bootnode_port, self.network_id });
-        const boot_conn = try Connection.dial(
-            self.allocator,
-            &self.id,
-            self.network_id,
-            self.nonce,
-            ip4,
-            opts.bootnode_port,
-        );
+        if (opts.bootnodes.len == 0) return error.NoBootnodeCandidates;
+
+        var boot_conn: *Connection = undefined;
+        var connected = false;
+        for (opts.bootnodes, 0..) |c, idx| {
+            const ip4 = parseIpv4(c.ip) orelse {
+                std.debug.print("[daemon] candidate {d}/{d} {s}:{d} — invalid ipv4, skipping\n", .{ idx + 1, opts.bootnodes.len, c.ip, c.port });
+                continue;
+            };
+            std.debug.print("[daemon] dialing bootnode {d}/{d} {s}:{d} (network_id={d})\n", .{ idx + 1, opts.bootnodes.len, c.ip, c.port, self.network_id });
+            boot_conn = Connection.dial(
+                self.allocator,
+                &self.id,
+                self.network_id,
+                self.nonce,
+                ip4,
+                c.port,
+            ) catch |e| {
+                std.debug.print("[daemon] candidate {d}/{d} {s}:{d} dial failed: {any}\n", .{ idx + 1, opts.bootnodes.len, c.ip, c.port, e });
+                continue;
+            };
+            connected = true;
+            break;
+        }
+        if (!connected) return error.AllBootnodesUnreachable;
         std.debug.print(
             "[daemon] bootnode handshake done: overlay={s} welcome=\"{s}\"\n",
             .{ std.fmt.bytesToHex(boot_conn.peer_overlay, .lower), boot_conn.peer_welcome_message },

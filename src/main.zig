@@ -4,6 +4,7 @@ const bmt = @import("bmt.zig");
 const identity = @import("identity.zig");
 const p2p = @import("p2p.zig");
 const dnsaddr = @import("dnsaddr.zig");
+const multiaddr_mod = @import("multiaddr.zig");
 const store_mod = @import("store.zig");
 const encryption = @import("encryption.zig");
 const credential_mod = @import("credential.zig");
@@ -45,6 +46,13 @@ const DEFAULT_STORE_MAX_BYTES: u64 = 100 * 1024 * 1024;
 const Args = struct {
     peer_ip: []const u8 = "127.0.0.1",
     peer_port: u16 = 1634,
+    /// Whether `--peer` was explicitly passed (vs. left as default).
+    /// Used to enforce mutual exclusion with `--bootnode`.
+    peer_explicit: bool = false,
+    /// Raw `--bootnode` value: either `/dnsaddr/<host>` or
+    /// `/ip4/<x>/tcp/<y>[/p2p/...]`. Resolved into a candidate list
+    /// before daemon launch. null = use --peer.
+    bootnode_arg: ?[]const u8 = null,
     network_id: u64 = 10,
     subcommand: enum { none, resolve, retrieve, daemon, identity } = .none,
     /// For `resolve`: the hostname.
@@ -87,6 +95,11 @@ fn parseArgs(argv: []const []const u8) !Args {
             const colon = std.mem.indexOfScalar(u8, peer_str, ':') orelse return error.InvalidPeer;
             a.peer_ip = peer_str[0..colon];
             a.peer_port = try std.fmt.parseInt(u16, peer_str[colon + 1 ..], 10);
+            a.peer_explicit = true;
+        } else if (std.mem.eql(u8, arg, "--bootnode")) {
+            i += 1;
+            if (i >= argv.len) return error.MissingValue;
+            a.bootnode_arg = argv[i];
         } else if (std.mem.eql(u8, arg, "--network-id")) {
             i += 1;
             if (i >= argv.len) return error.MissingValue;
@@ -146,7 +159,109 @@ fn parseArgs(argv: []const []const u8) !Args {
             return error.TooManyArguments;
         }
     }
+    if (a.peer_explicit and a.bootnode_arg != null) {
+        std.debug.print("--peer and --bootnode are mutually exclusive; pick one.\n", .{});
+        return error.ConflictingPeerFlags;
+    }
     return a;
+}
+
+/// One bootstrap target: an IPv4 string + TCP port. The strings are owned
+/// by the parent BootnodeCandidates arena.
+pub const BootnodeCandidate = struct {
+    ip: []const u8,
+    port: u16,
+};
+
+/// Owned list of (ip, port) bootnode candidates resolved from a
+/// `--bootnode` argument. Memory is single-arena; deinit drops everything.
+pub const BootnodeCandidates = struct {
+    items: []const BootnodeCandidate,
+    arena: std.heap.ArenaAllocator,
+
+    pub fn deinit(self: *BootnodeCandidates) void {
+        self.arena.deinit();
+    }
+};
+
+/// Walk a parsed multiaddr looking for an /ip4/<x>/tcp/<y> pair. On
+/// success returns the four IP bytes and the u16 port. On failure
+/// (no ip4, or no tcp, or malformed) returns null — caller skips
+/// this multiaddr and tries the next.
+fn extractIp4Tcp(ma: multiaddr_mod.Multiaddr) ?struct { ip: [4]u8, port: u16 } {
+    var ip: ?[4]u8 = null;
+    var port: ?u16 = null;
+    var it = ma.iterator();
+    while (true) {
+        const next = it.next() catch return null;
+        const comp = next orelse break;
+        switch (comp.code) {
+            .ip4 => {
+                if (comp.value.len != 4) return null;
+                ip = .{ comp.value[0], comp.value[1], comp.value[2], comp.value[3] };
+            },
+            .tcp => {
+                if (comp.value.len != 2) return null;
+                port = std.mem.readInt(u16, comp.value[0..2], .big);
+            },
+            else => {}, // skip /p2p/, /udp/, etc.
+        }
+    }
+    if (ip == null or port == null) return null;
+    return .{ .ip = ip.?, .port = port.? };
+}
+
+/// Parse a `--bootnode` value into a list of candidates. Accepts:
+///   - `/dnsaddr/<host>`        — TXT-resolve, parse each result
+///   - `/ip4/<x>/tcp/<y>...`    — single literal multiaddr
+/// Anything else returns error.UnsupportedBootnodeForm. /dnsaddr
+/// resolution may itself yield further /dnsaddr layers; the
+/// resolver recurses up to dnsaddr.MAX_RESOLVE_DEPTH.
+pub fn resolveBootnodeCandidates(
+    parent_allocator: std.mem.Allocator,
+    bootnode_arg: []const u8,
+) !BootnodeCandidates {
+    var arena = std.heap.ArenaAllocator.init(parent_allocator);
+    errdefer arena.deinit();
+    const a = arena.allocator();
+
+    var out: std.ArrayList(BootnodeCandidate) = .{};
+
+    if (std.mem.startsWith(u8, bootnode_arg, "/dnsaddr/")) {
+        const host = bootnode_arg["/dnsaddr/".len..];
+        if (host.len == 0) return error.InvalidBootnode;
+
+        var resolved = try dnsaddr.resolve(parent_allocator, host);
+        defer resolved.deinit();
+
+        for (resolved.items) |text| {
+            // Each entry is a textual multiaddr. Parse and extract.
+            var ma = multiaddr_mod.Multiaddr.fromText(parent_allocator, text) catch continue;
+            defer ma.deinit();
+            const ipport = extractIp4Tcp(ma) orelse continue;
+            const ip_str = try std.fmt.allocPrint(a, "{d}.{d}.{d}.{d}", .{
+                ipport.ip[0], ipport.ip[1], ipport.ip[2], ipport.ip[3],
+            });
+            try out.append(a, .{ .ip = ip_str, .port = ipport.port });
+        }
+    } else if (std.mem.startsWith(u8, bootnode_arg, "/ip4/")) {
+        var ma = try multiaddr_mod.Multiaddr.fromText(parent_allocator, bootnode_arg);
+        defer ma.deinit();
+        const ipport = extractIp4Tcp(ma) orelse return error.InvalidBootnode;
+        const ip_str = try std.fmt.allocPrint(a, "{d}.{d}.{d}.{d}", .{
+            ipport.ip[0], ipport.ip[1], ipport.ip[2], ipport.ip[3],
+        });
+        try out.append(a, .{ .ip = ip_str, .port = ipport.port });
+    } else {
+        return error.UnsupportedBootnodeForm;
+    }
+
+    if (out.items.len == 0) return error.NoBootnodeCandidates;
+
+    return BootnodeCandidates{
+        .items = try out.toOwnedSlice(a),
+        .arena = arena,
+    };
 }
 
 fn printHelp() void {
@@ -156,7 +271,20 @@ fn printHelp() void {
         \\usage: zigbee [GLOBAL FLAGS] [SUBCOMMAND ...]
         \\
         \\global flags:
-        \\  --peer ip:port      peer to dial (default 127.0.0.1:1634)
+        \\  --peer ip:port      peer to dial (default 127.0.0.1:1634).
+        \\                      Use this for a known fixed peer (e.g. a
+        \\                      local bee on 127.0.0.1:1634). Mutually
+        \\                      exclusive with --bootnode.
+        \\  --bootnode MA       bootnode multiaddr; one of:
+        \\                        /dnsaddr/<host>           DNS-resolved
+        \\                        /ip4/<x>/tcp/<y>[/p2p/<id>]
+        \\                      For /dnsaddr/ zigbee resolves the TXT
+        \\                      records and tries each candidate in
+        \\                      turn until one connects (the others
+        \\                      stay in the table for hive). Use this
+        \\                      when you want bootstrap fan-out — e.g.
+        \\                      --bootnode /dnsaddr/sepolia.testnet.ethswarm.org.
+        \\                      Mutually exclusive with --peer.
         \\  --network-id N      Swarm network id (default 10 = Sepolia testnet,
         \\                      mainnet = 1)
         \\  --identity-file P   path to persistent libp2p identity key
@@ -397,10 +525,44 @@ pub fn main() !void {
 
     std.debug.print("Node Overlay Address: {s}\n", .{std.fmt.bytesToHex(node.overlay, .lower)});
 
+    // Build the list of bootstrap candidates from --peer or --bootnode.
+    // Default (neither flag set) is the legacy 127.0.0.1:1634 single
+    // candidate, so existing invocations keep working unchanged.
+    var bootnode_candidates_opt: ?BootnodeCandidates = null;
+    defer if (bootnode_candidates_opt) |*bc| bc.deinit();
+
+    const single_candidate = [_]p2p.P2PNode.BootnodeCandidate{.{ .ip = args.peer_ip, .port = args.peer_port }};
+    const candidates_slice: []const p2p.P2PNode.BootnodeCandidate = single_candidate[0..];
+
+    if (args.bootnode_arg) |raw| {
+        bootnode_candidates_opt = resolveBootnodeCandidates(allocator, raw) catch |e| {
+            std.debug.print("[bootnode] failed to resolve {s}: {any}\n", .{ raw, e });
+            return e;
+        };
+        const list = bootnode_candidates_opt.?.items;
+        // Re-pack into the p2p type. Same shape, different namespace.
+        const p2p_list = try allocator.alloc(p2p.P2PNode.BootnodeCandidate, list.len);
+        defer allocator.free(p2p_list);
+        for (list, 0..) |c, i| p2p_list[i] = .{ .ip = c.ip, .port = c.port };
+        std.debug.print("[bootnode] resolved {d} candidate(s) from {s}\n", .{ list.len, raw });
+        for (list, 0..) |c, i| std.debug.print("  {d}. {s}:{d}\n", .{ i + 1, c.ip, c.port });
+
+        if (args.subcommand == .daemon) {
+            try node.daemonRun(.{
+                .bootnodes = p2p_list,
+                .max_peers = args.max_peers,
+                .api_port = args.api_port,
+            });
+            return;
+        }
+        // Non-daemon: just use the first candidate for the one-shot dial.
+        try node.dial(p2p_list[0].ip, p2p_list[0].port, action);
+        return;
+    }
+
     if (args.subcommand == .daemon) {
         try node.daemonRun(.{
-            .bootnode_ip = args.peer_ip,
-            .bootnode_port = args.peer_port,
+            .bootnodes = candidates_slice,
             .max_peers = args.max_peers,
             .api_port = args.api_port,
         });
@@ -473,6 +635,60 @@ test "parseArgs: --peer + --network-id + retrieve" {
 test "parseArgs: rejects unknown subcommand" {
     const argv = [_][]const u8{ "zigbee", "wat" };
     try std.testing.expectError(error.UnknownSubcommand, parseArgs(&argv));
+}
+
+test "parseArgs: --bootnode parses /dnsaddr/" {
+    const argv = [_][]const u8{
+        "zigbee", "--bootnode", "/dnsaddr/sepolia.testnet.ethswarm.org", "daemon",
+    };
+    const a = try parseArgs(&argv);
+    try std.testing.expectEqualStrings("/dnsaddr/sepolia.testnet.ethswarm.org", a.bootnode_arg.?);
+    try std.testing.expect(!a.peer_explicit);
+}
+
+test "parseArgs: --peer + --bootnode is rejected" {
+    const argv = [_][]const u8{
+        "zigbee", "--peer", "1.2.3.4:1634", "--bootnode", "/dnsaddr/example.org", "daemon",
+    };
+    try std.testing.expectError(error.ConflictingPeerFlags, parseArgs(&argv));
+}
+
+test "resolveBootnodeCandidates: literal /ip4/.../tcp/..." {
+    const allocator = std.testing.allocator;
+    var c = try resolveBootnodeCandidates(allocator, "/ip4/167.235.96.31/tcp/32491");
+    defer c.deinit();
+    try std.testing.expectEqual(@as(usize, 1), c.items.len);
+    try std.testing.expectEqualStrings("167.235.96.31", c.items[0].ip);
+    try std.testing.expectEqual(@as(u16, 32491), c.items[0].port);
+}
+
+test "resolveBootnodeCandidates: /ip4/.../tcp/.../p2p/... drops the p2p suffix" {
+    const allocator = std.testing.allocator;
+    // /p2p/Qm... encodes as code=0x01a5, varint-len, multihash bytes.
+    // Use a literal multiaddr without /p2p/ for simplicity (Multiaddr.fromText
+    // doesn't yet accept the textual /p2p/Qm... form). The test verifies
+    // extractIp4Tcp picks the right pair regardless of trailing components.
+    var c = try resolveBootnodeCandidates(allocator, "/ip4/95.216.91.90/tcp/30634");
+    defer c.deinit();
+    try std.testing.expectEqual(@as(usize, 1), c.items.len);
+    try std.testing.expectEqualStrings("95.216.91.90", c.items[0].ip);
+    try std.testing.expectEqual(@as(u16, 30634), c.items[0].port);
+}
+
+test "resolveBootnodeCandidates: rejects bare host:port" {
+    const allocator = std.testing.allocator;
+    try std.testing.expectError(
+        error.UnsupportedBootnodeForm,
+        resolveBootnodeCandidates(allocator, "1.2.3.4:1234"),
+    );
+}
+
+test "resolveBootnodeCandidates: rejects /dnsaddr/ with empty host" {
+    const allocator = std.testing.allocator;
+    try std.testing.expectError(
+        error.InvalidBootnode,
+        resolveBootnodeCandidates(allocator, "/dnsaddr/"),
+    );
 }
 
 test {

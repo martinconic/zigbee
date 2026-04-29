@@ -1,11 +1,11 @@
 # zigbee — operational status snapshot
 
-**Release:** 0.5.0 (tagged) — retrieval-maturity: local chunk store + encrypted-chunk refs + SWAP cheques (issue-only), live-verified end-to-end against bee on Sepolia. ([0.5.0 release notes](release-notes/0.5.0.md), preceded by [0.4.2](release-notes/0.4.2.md), [0.4.1](release-notes/0.4.1.md), [0.4](release-notes/0.4.md))
+**Release:** 0.5.1 (tagged) — adds `--bootnode` flag (`/dnsaddr/<host>` or `/ip4/.../tcp/...`, mirrors bee's `testnet.yaml`). Built on 0.5.0's retrieval-maturity: local chunk store + encrypted-chunk refs + SWAP cheques (issue-only), live-verified end-to-end against bee on Sepolia. ([0.5.1 release notes](release-notes/0.5.1.md), preceded by [0.5.0](release-notes/0.5.0.md), [0.4.2](release-notes/0.4.2.md), [0.4.1](release-notes/0.4.1.md), [0.4](release-notes/0.4.md))
 **Next on `main` (0.6.0 milestone):** push — postage stamp parser + verifier + issuer + `/swarm/pushsync/1.3.1` initiator + `POST /bytes` and `POST /bzz` upload API. ~12 work-weeks FTE. Per-target chain integration stays an outer ring (operator-side provisioning), not zigbee core.
 **Headline focus:** **IoT / embedded.** zigbee is the small-footprint Bee client family for devices that can't run Go bee. Locked in 2026-04-28; framing detail in [`iot-roadmap.html`](iot-roadmap.html).
 **Strategy references:** [`iot-roadmap.html`](iot-roadmap.html) (IoT-specific roadmap) + [`strategy.html`](strategy.html) (full strategic dossier)
 **Date last refreshed:** 2026-04-29
-**Tests:** 107/107 unit tests pass (`zig build test --summary all`)
+**Tests:** 113/113 unit tests pass (`zig build test --summary all`)
 **Source size:** ~11,500 lines of Zig across 34 files in `zigbee/src/` (added in 0.5.0: `src/store.zig`, `src/encryption.zig`, `src/cheque.zig`, `src/swap.zig`, `src/accounting.zig`, `src/credential.zig`)
 **Repository:** https://github.com/martinconic/zigbee (public, BSD-3-Clause)
 **Live status against bee:** verified end-to-end against a local bee
@@ -30,7 +30,7 @@ first.
 | **Repo (local)** | `/home/calin/work/swarm/bee-clients/zigbee` |
 | **Repo (GitHub)** | https://github.com/martinconic/zigbee |
 | **Default branch** | `main` (in sync with `origin/main`) |
-| **Latest tag** | `v0.5.0` (0.6.0 push milestone is the next concrete work on `main`) |
+| **Latest tag** | `v0.5.1` (0.6.0 push milestone is the next concrete work on `main`) |
 | **Bee source we cross-reference** | `/home/calin/work/swarm/dev/bee` (Go) |
 | **Spec PDFs** | `/home/calin/work/swarm/bee-clients/docs/{swarm_protocol_spec.pdf, the-book-of-swarm-2.pdf}` |
 | **Local bee binary** | `/home/calin/work/swarm/bee-clients/bee/bee-bin` (built locally with `go build -o ./bee-bin ./cmd/bee/` inside the `bee/` repo; ~70 MB; gitignored). Testnet config: `/home/calin/work/swarm/bee-clients/testnet.yaml`. |
@@ -40,7 +40,7 @@ first.
 
 ```bash
 cd /home/calin/work/swarm/bee-clients/zigbee
-zig build test --summary all   # expect: 107/107 tests passed
+zig build test --summary all   # expect: 113/113 tests passed
 ```
 
 ### What's done (per-release)

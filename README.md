@@ -57,7 +57,11 @@ how forwarding-Kademlia does the heavy lifting on bee's side) is in
 
 ---
 
-**Current: 0.5.0 — retrieval-maturity.** Local chunk-store cache,
+**Current: 0.5.1.** 0.5.1 adds a `--bootnode` flag that accepts
+`/dnsaddr/<host>` or `/ip4/.../tcp/...` multiaddrs (mirrors bee's
+`testnet.yaml` `bootnode:` field) — point zigbee at a hostname,
+it resolves, tries each candidate in order until one connects.
+On top of 0.5.0's **retrieval-maturity:** local chunk-store cache,
 encrypted-chunk references, and SWAP cheques (issue-only) — all
 live-verified end-to-end against bee on Sepolia (2026-04-29).
 Built on top of 0.4's bee-compatible read-only HTTP API: `/health`,
@@ -70,8 +74,10 @@ threshold trips, byte-identical to bee's golden vector. The daemon
 exits cleanly on SIGINT/SIGTERM and persists per-peer cumulative
 state next to the chequebook credential, so backup/restore works
 as a unit. Release notes:
-[`docs/release-notes/0.5.0.md`](docs/release-notes/0.5.0.md) (retrieval-
-maturity, this release),
+[`docs/release-notes/0.5.1.md`](docs/release-notes/0.5.1.md) (`--bootnode`
+flag, this release),
+[`0.5.0.md`](docs/release-notes/0.5.0.md) (retrieval-maturity:
+chunk store + encrypted refs + SWAP cheques),
 [`0.4.2.md`](docs/release-notes/0.4.2.md) (handshake-print cleanup +
 `/pingpong` + graceful shutdown),
 [`0.4.1.md`](docs/release-notes/0.4.1.md) (persistent identity +
@@ -145,7 +151,7 @@ Plus the underlying primitives: secp256k1 (vendored libsecp256k1), Ethereum
 keccak/eip-191/recoverable-sig, BMT chunk addressing, libp2p PeerID multihash,
 multiaddr text/binary parser, hand-rolled protobuf.
 
-**107 unit tests pass** (`zig build test`), including vector tests against
+**113 unit tests pass** (`zig build test`), including vector tests against
 the official Noise XX KAT, bee golden vectors for chunk hashing/overlay
 derivation, the bee `pkg/soc/soc_test.go` SOC vector, end-to-end joiner
 round-trips for single-leaf and multi-leaf chunk-trees, mantaray header
@@ -209,7 +215,7 @@ and link `libsecp256k1`).
 ```bash
 cd zigbee
 zig build           # development default: Debug
-zig build test      # 107/107
+zig build test      # 113/113
 ```
 
 ### Release modes
@@ -712,7 +718,7 @@ ports, 0.8 browser target, 1.0 full chain integration.
 zig build test --summary all
 ```
 
-Currently: **107 / 107 passing**.
+Currently: **113 / 113 passing**.
 
 The interesting ones:
 - `noise_kat`: Cacophony Noise_XX_25519_ChaChaPoly_SHA256 vector + a
