@@ -1,12 +1,12 @@
 # zigbee — operational status snapshot
 
 **Release:** 0.4.2 (tagged) — operational polish: handshake-print cleanup + `/pingpong/<peer>` HTTP + graceful shutdown ([0.4.2 release notes](RELEASE_NOTES_0.4.2.md), preceded by [0.4.1](RELEASE_NOTES_0.4.1.md) and [0.4](RELEASE_NOTES_0.4.md))
-**In progress on `main` (0.5.0 milestone):** 0.5a local flat-file chunk store **landed** + 0.5b encrypted-chunk refs **landed** (see [in-progress 0.5.0 release notes](RELEASE_NOTES_0.5.0.md)); 0.5c SWAP cheques still to ship before tagging 0.5.0.
+**In progress on `main` (0.5.0 milestone):** 0.5a local flat-file chunk store **landed** + 0.5b encrypted-chunk refs **landed** + 0.5c SWAP cheques (issue-only) **landed** (see [in-progress 0.5.0 release notes](RELEASE_NOTES_0.5.0.md)). All three sub-items shipped; only **0.5c-e live verification** (needs a deployed chequebook on Sepolia) is pending before tagging final v0.5.0.
 **Headline focus:** **IoT / embedded.** zigbee is the small-footprint Bee client family for devices that can't run Go bee. Locked in 2026-04-28; framing detail in [`docs/iot-roadmap.html`](docs/iot-roadmap.html).
 **Strategy references:** [`docs/iot-roadmap.html`](docs/iot-roadmap.html) (IoT-specific roadmap) + [`docs/strategy.html`](docs/strategy.html) (full strategic dossier)
 **Date last refreshed:** 2026-04-29
-**Tests:** 87/87 unit tests pass (`zig build test --summary all`)
-**Source size:** ~9,700 lines of Zig across 30 files in `zigbee/src/` (added `src/store.zig`, `src/encryption.zig`)
+**Tests:** 104/104 unit tests pass (`zig build test --summary all`)
+**Source size:** ~11,100 lines of Zig across 34 files in `zigbee/src/` (added `src/store.zig`, `src/encryption.zig`, `src/cheque.zig`, `src/swap.zig`, `src/accounting.zig`, `src/credential.zig`)
 **Repository:** https://github.com/martinconic/zigbee (public, BSD-3-Clause)
 **Live status against bee:** verified end-to-end against a local bee
 (`bee/v2.7.2-rc1`, sepolia testnet config) and against the public
@@ -37,7 +37,7 @@ first.
 
 ```bash
 cd /home/calin/work/swarm/bee-clients/zigbee
-zig build test --summary all   # expect: 87/87 tests passed
+zig build test --summary all   # expect: 104/104 tests passed
 ```
 
 ### What's done (per-release)
@@ -102,6 +102,22 @@ zig build test --summary all   # expect: 87/87 tests passed
   / 11 ms cached for a 2 KiB single-chunk file via /bytes,
   byte-identical for 16 KiB multi-chunk and for /bzz with an
   encrypted manifest. ([in-progress 0.5.0 release
+  notes](RELEASE_NOTES_0.5.0.md))
+- **0.5c** *(landed on `main`; live-test pending; 0.5.0 not yet tagged)* —
+  SWAP cheques (issue-only). New `src/cheque.zig` (~425 lines) does
+  EIP-712 typed-data hashing + secp256k1 recoverable signing; verified
+  byte-identical against bee's `TestSignChequeIntegration` golden
+  vector (priv `634fb5a8…`, payout 500, chainId 1). New `src/swap.zig`
+  (~315 lines) implements the `/swarm/swap/1.0.0/swap` initiator with
+  settlement-headers parsing + `EmitCheque` protobuf. New
+  `src/accounting.zig` (~470 lines) tracks per-peer debt with
+  persistent state at `~/.zigbee/accounting/<overlay>.json` (atomic
+  write); triggers cheque issuance after every 20 retrievals.
+  New `src/credential.zig` (~155 lines) loads the chequebook
+  credential JSON. CLI: `--chequebook PATH`. Without the flag,
+  accounting still tracks debt but no cheques are issued. **0.5c-e
+  live verification** against a real deployed chequebook is the only
+  thing left for v0.5.0 final. ([in-progress 0.5.0 release
   notes](RELEASE_NOTES_0.5.0.md))
 
 ### What's open / pending (development plan locked in 2026-04-28)
@@ -195,7 +211,7 @@ Zigbee is an **ultra-light Swarm client** — even lighter than bee's `light: tr
 | Push (uploads) | ❌ (needs postage stamps + chain integration) |
 | Pullsync, redistribution | ❌ |
 | SOC validation | ✅ (added in 0.4.1c — keccak256(id ‖ owner) verified, mismatch returns ChunkAddressMismatch) |
-| SWAP cheque payment | ❌ ⇒ caps unpaid retrieval at ~25–30 chunks per peer |
+| SWAP cheque payment | ✅ added in 0.5c — EIP-712-signed cheques on `/swarm/swap/1.0.0/swap`, byte-identical to bee's `TestSignChequeIntegration` golden vector. Issue-only (no on-chain cashing). Live verification against a real deployed chequebook is 0.5c-e (rc2 milestone). |
 | Mantaray manifest walking (default-document) | ✅ — `/bzz/<manifest-ref>` byte-identical to `bee /bzz/<ref>/` |
 | Manifest path lookups (`/bzz/<ref>/<path>` for multi-file) | ✅ — HTTP route parses trailing path, walker does the lookup, byte-identical to `bee /bzz/<ref>/<path>` (added in 0.4) |
 | Bee-compatible read-only HTTP API (`/health`, `/node`, `/addresses`, `/peers`, `/topology`, `/chunks`, `/bytes`) | ✅ added in 0.4 — drop-in for bee tools |
@@ -249,6 +265,10 @@ bee peers zigbee is connected to.
 | `src/p2p.zig` (0.4.2 additions) | `POST /pingpong/<overlay>` route + `formatGoDuration` helper + `g_shutdown` atomic + SIGINT/SIGTERM handler + poll-gated `serveApi` + joinable dialer thread | ✓ unit (`formatGoDuration` golden samples) |
 | `src/store.zig` (0.5a) | Local flat-file chunk store with basic LRU. `<root>/<2-hex>/<64-hex>` layout, atomic write (tempfile + fsync + rename), hashmap + DLL index under one mutex, startup scan rebuilds index from file mtimes. `Store.openOrCreate` / `get` / `put` / `deinit`. | ✓ 6 unit tests (round-trip, miss, eviction, MRU-on-hit, restart-resume, shrunken-cap) |
 | `src/encryption.zig` (0.5b) | Bee-compatible keccak256-CTR segment cipher for encrypted refs. `transform(key, buf, init_ctr)` (involutive: encrypt = decrypt), `decryptChunk(allocator, key, encrypted_chunk)` returns owned `decrypted_span(8) ‖ trimmed-payload`, `encryptedRefCount(span)` for intermediate-chunk ref counts (branching=64). Span uses `init_ctr=128`, data uses `init_ctr=0` — disjoint keystreams. | ✓ 5 unit tests (bee golden vector for 4 KiB zeros, involutive, span/data disjoint, leaf round-trip, ref-count) |
+| `src/cheque.zig` (0.5c) | SWAP cheque data model + EIP-712 typed-data signing. `Cheque{chequebook,beneficiary,cumulative_payout}`, `SignedCheque{cheque,signature}`, `domainSeparator(chain_id)`, `structHash(*Cheque)`, `signingDigest(*Cheque, chain_id)`, `sign` (recoverable secp256k1 with v∈{27,28}), `recoverIssuer`, `marshalJson`/`unmarshalJson` (Go-default `encoding/json` shape — capitalised fields, address `0x..`, payout JSON number, signature base64). | ✓ bee golden vector (`TestSignChequeIntegration`: priv `634fb5a8…`, payout 500, chainId 1, signature `171b63fc…2fc421c`) + recover round-trip + JSON round-trip + u256 decimal helpers |
+| `src/swap.zig` (0.5c) | `/swarm/swap/1.0.0/swap` initiator. `SettlementHeaders{exchange_rate,deduction}` (BE uint256), `parseSettlementHeaders` (tolerates field order; missing-deduction → 0; missing-exchange errors), `negotiate(stream)` (write empty out → read bee's), `sendCheque(stream, *SignedCheque)` (`EmitCheque{Cheque: <json>}` protobuf). No inbound responder — retrieval-only clients never receive cheques. | ✓ headers round-trip with both fields, missing-field defaults, EmitCheque tag/length wrapping |
+| `src/accounting.zig` (0.5c) | Per-peer SWAP accounting state + persistence. `Accounting.openOrCreate`, `charge(peer, n_chunks)` (returns true at trigger), `buildCheque(peer, contract, beneficiary)` (persists new cumulative atomically *before* returning), `markChequeSent`, `snapshot` (read-only). State files at `~/.zigbee/accounting/<overlay-hex>.json` (atomic tempfile + fsync + rename). Trigger = 20 chunks; cheque amount = 10.8M wei (~80% of bee's full-node threshold). | ✓ 4 unit tests (charge below trigger, trigger at 20 + cumulative monotonic, state survives reopen, per-peer isolation) |
+| `src/credential.zig` (0.5c) | Chequebook credential loader. `ChequebookCredential{contract,owner_private_key,chain_id}`, `load(allocator, path)`. Tolerates `0x`-prefixed and raw hex. Returns typed errors (`InvalidContract`, `InvalidPrivateKey`, `InvalidChainId`, `InvalidCredentialFile`) for malformed fields. | ✓ 3 unit tests (valid file, missing field, malformed hex) |
 | `src/root.zig` | Module entry point | — |
 
 ---

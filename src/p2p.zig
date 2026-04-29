@@ -20,6 +20,10 @@ const connection_mod = @import("connection.zig");
 const Connection = connection_mod.Connection;
 const store_mod = @import("store.zig");
 const encryption = @import("encryption.zig");
+const cheque_mod = @import("cheque.zig");
+const swap_mod = @import("swap.zig");
+const accounting_mod = @import("accounting.zig");
+const credential_mod = @import("credential.zig");
 const net = std.net;
 
 /// libp2p protocols this node speaks. Advertised in Identify and accepted on
@@ -100,6 +104,17 @@ pub const P2PNode = struct {
     /// caller (passed in via init); deinit's it on P2PNode.deinit.
     store: ?*store_mod.Store = null,
 
+    /// Per-peer SWAP accounting (0.5c). Always non-null in normal operation
+    /// — tracks debt even when no chequebook credential is loaded so the
+    /// flag becomes a one-line toggle (`--chequebook PATH`) rather than a
+    /// rebuild. Owned by P2PNode; deinit'd on `deinit`.
+    accounting: ?*accounting_mod.Accounting = null,
+
+    /// Chequebook credential for cheque issuance (0.5c). Null → accounting
+    /// tracks but never issues; bee's disconnect threshold stays the
+    /// retrieval ceiling (current pre-0.5c behaviour).
+    chequebook: ?credential_mod.ChequebookCredential = null,
+
     pub fn init(
         allocator: std.mem.Allocator,
         id: identity.Identity,
@@ -113,6 +128,11 @@ pub const P2PNode = struct {
         /// Optional local chunk store. Pass null to disable caching.
         /// Ownership transfers — deinit'd on P2PNode.deinit.
         store: ?*store_mod.Store,
+        /// Optional accounting tracker (0.5c). Ownership transfers.
+        accounting: ?*accounting_mod.Accounting,
+        /// Optional chequebook credential (0.5c). When set, accounting
+        /// triggers EIP-712-signed cheque issuance.
+        chequebook: ?credential_mod.ChequebookCredential,
     ) !P2PNode {
         var overlay: [bzz_address.OVERLAY_LEN]u8 = undefined;
         id.overlayAddress(network_id, nonce, &overlay);
@@ -124,6 +144,8 @@ pub const P2PNode = struct {
             .overlay = overlay,
             .peers = peer_table.PeerTable.init(allocator, overlay),
             .store = store,
+            .accounting = accounting,
+            .chequebook = chequebook,
         };
     }
 
@@ -135,6 +157,7 @@ pub const P2PNode = struct {
         self.peers.deinit();
         self.hive_candidate_overlays.deinit(self.allocator);
         if (self.store) |s| s.deinit();
+        if (self.accounting) |a| a.deinit();
     }
 
     /// Adds a peer-overlay to the "candidates to dial" queue. Called from
@@ -375,6 +398,13 @@ pub const P2PNode = struct {
                         });
                     };
                 }
+                // SWAP accounting + cheque issuance (0.5c). Best-effort.
+                self.chargeAndMaybeIssue(conn) catch |e| {
+                    std.debug.print(
+                        "[swap] charge/issue against {s} failed: {any}\n",
+                        .{ std.fmt.bytesToHex(conn.peer_overlay, .lower), e },
+                    );
+                };
                 return rc;
             } else |e| {
                 last_err = e;
@@ -385,6 +415,66 @@ pub const P2PNode = struct {
             }
         }
         return last_err;
+    }
+
+    /// Per-retrieval SWAP hook (0.5c).
+    ///
+    /// 1. Charge the per-peer chunk counter (always — accounting tracks debt
+    ///    even when no chequebook is loaded).
+    /// 2. If the trigger threshold has been crossed AND a chequebook
+    ///    credential is available, build + sign + send a cheque on a fresh
+    ///    swap stream against the same connection. Bee receives, validates
+    ///    the EIP-712 signature, calls factory.VerifyChequebook on the
+    ///    contract address (chain RPC), and on success credits us — the
+    ///    per-peer disconnect threshold counter resets in bee's view.
+    /// 3. On any failure (no credential, swap negotiation rejected,
+    ///    factory verification fails on bee's side), log but do not raise:
+    ///    we'll naturally retry on the next retrieval that re-trips the
+    ///    threshold.
+    fn chargeAndMaybeIssue(self: *P2PNode, conn: *Connection) !void {
+        const acc = self.accounting orelse return; // tracking disabled (test paths)
+        const should_issue = try acc.charge(conn.peer_overlay, 1);
+        if (!should_issue) return;
+
+        const cb = self.chequebook orelse {
+            std.debug.print(
+                "[swap] {s}: charge tripped ({d} chunks) but no --chequebook; bee will disconnect when threshold hits\n",
+                .{ std.fmt.bytesToHex(conn.peer_overlay, .lower), accounting_mod.TRIGGER_CHUNKS },
+            );
+            return;
+        };
+
+        // Build + sign first (locked operations on accounting state). The
+        // build call persists the new cumulative atomically *before*
+        // returning, so a crash mid-send won't issue a stale (re-decreasing)
+        // cumulative on retry.
+        const c = try acc.buildCheque(conn.peer_overlay, cb.contract, conn.peer_eth_address);
+        const sig = try cheque_mod.sign(&c, cb.chain_id, cb.owner_private_key);
+        const signed = cheque_mod.SignedCheque{ .cheque = c, .signature = sig };
+
+        // Open a fresh stream on this connection, multistream-select swap,
+        // exchange settlement headers, then send the cheque.
+        const stream = try conn.openStream();
+        defer stream.close() catch {};
+
+        try multistream.selectOne(stream, swap_mod.PROTOCOL_ID);
+        const headers = try swap_mod.negotiate(self.allocator, stream);
+        std.debug.print(
+            "[swap] {s}: negotiated exchange={d} deduction={d}; emitting cheque cumulativePayout={d}\n",
+            .{
+                std.fmt.bytesToHex(conn.peer_overlay, .lower),
+                headers.exchange_rate,
+                headers.deduction,
+                c.cumulative_payout,
+            },
+        );
+
+        try swap_mod.sendCheque(self.allocator, stream, &signed);
+        acc.markChequeSent(conn.peer_overlay);
+        std.debug.print(
+            "[swap] {s}: cheque accepted by stream layer; chunk counter reset\n",
+            .{std.fmt.bytesToHex(conn.peer_overlay, .lower)},
+        );
     }
 
     // --------------------------------------------------------------------

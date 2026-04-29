@@ -6,6 +6,8 @@ const p2p = @import("p2p.zig");
 const dnsaddr = @import("dnsaddr.zig");
 const store_mod = @import("store.zig");
 const encryption = @import("encryption.zig");
+const credential_mod = @import("credential.zig");
+const accounting_mod = @import("accounting.zig");
 
 /// Default local-store cap. 100 MiB ≈ 25 000 chunks at 4 KiB each;
 /// fits a Pi Zero comfortably and is tunable down for ESP32-class
@@ -64,6 +66,11 @@ const Args = struct {
     store_max_bytes: u64 = DEFAULT_STORE_MAX_BYTES,
     /// Disable the local chunk store entirely (0.5a).
     no_store: bool = false,
+    /// Path to the chequebook credential JSON (0.5c). When set, zigbee
+    /// signs and emits SWAP cheques to peers it owes BZZ to. When unset,
+    /// per-peer accounting still tracks debt but never issues — the
+    /// disconnect-threshold ceiling stays in place.
+    chequebook_path: ?[]const u8 = null,
 };
 
 fn parseArgs(argv: []const []const u8) !Args {
@@ -109,6 +116,10 @@ fn parseArgs(argv: []const []const u8) !Args {
             a.store_max_bytes = try std.fmt.parseInt(u64, argv[i], 10);
         } else if (std.mem.eql(u8, arg, "--no-store")) {
             a.no_store = true;
+        } else if (std.mem.eql(u8, arg, "--chequebook")) {
+            i += 1;
+            if (i >= argv.len) return error.MissingValue;
+            a.chequebook_path = argv[i];
         } else if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
             return error.HelpRequested;
         } else if (positional_idx == 0) {
@@ -165,6 +176,15 @@ fn printHelp() void {
         \\                      to MRU happens on every successful get.
         \\  --no-store          disable the local chunk store entirely;
         \\                      every retrieval hits the network.
+        \\  --chequebook P      path to a chequebook credential JSON file:
+        \\                      {{ "contract": "0x..", "owner_private_key":
+        \\                      "0x..", "chain_id": <int> }}. When set,
+        \\                      zigbee signs SWAP cheques and emits them
+        \\                      to peers we owe BZZ to (~every 20 chunks).
+        \\                      Without it, accounting still tracks debt
+        \\                      but never issues — bee's per-peer
+        \\                      disconnect threshold (~25–30 chunks) stays
+        \\                      the ceiling.
         \\
         \\subcommands:
         \\  (none)              dial the peer, do the handshake, stay connected
@@ -296,7 +316,41 @@ pub fn main() !void {
         } };
     }
 
-    var node = try p2p.P2PNode.init(allocator, id, args.network_id, nonce, store_ptr);
+    // SWAP accounting (0.5c). Always opened — tracks per-peer debt even
+    // when the user has no chequebook credential, so adding `--chequebook`
+    // later is a one-line toggle, not a state-rebuild.
+    const accounting_root = try std.fs.path.join(allocator, &.{
+        std.posix.getenv("HOME") orelse ".",
+        ".zigbee",
+        "accounting",
+    });
+    defer allocator.free(accounting_root);
+    const accounting_ptr = try accounting_mod.Accounting.openOrCreate(allocator, accounting_root);
+
+    // Load chequebook credential if --chequebook was passed. The credential
+    // is small + immutable for the run; we capture it by value.
+    const chequebook_opt: ?credential_mod.ChequebookCredential = if (args.chequebook_path) |p| blk: {
+        std.debug.print("[swap] loading chequebook credential from {s}\n", .{p});
+        const cred = try credential_mod.load(allocator, p);
+        std.debug.print(
+            "[swap] chequebook contract=0x{s} chain_id={d}\n",
+            .{ std.fmt.bytesToHex(cred.contract, .lower), cred.chain_id },
+        );
+        break :blk cred;
+    } else blk: {
+        std.debug.print("[swap] no --chequebook; accounting tracks but does not issue cheques\n", .{});
+        break :blk null;
+    };
+
+    var node = try p2p.P2PNode.init(
+        allocator,
+        id,
+        args.network_id,
+        nonce,
+        store_ptr,
+        accounting_ptr,
+        chequebook_opt,
+    );
     defer node.deinit();
 
     std.debug.print("Node Overlay Address: {s}\n", .{std.fmt.bytesToHex(node.overlay, .lower)});
@@ -408,4 +462,8 @@ test {
     _ = @import("yamux.zig");
     _ = @import("store.zig");
     _ = @import("encryption.zig");
+    _ = @import("cheque.zig");
+    _ = @import("swap.zig");
+    _ = @import("accounting.zig");
+    _ = @import("credential.zig");
 }

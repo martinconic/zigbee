@@ -171,14 +171,16 @@ For the cases below the answer is "0.5+ milestone work" — see
 The current scope is read-only retrieval; everything below is
 acknowledged but deferred.
 
-- **SWAP / off-chain BZZ payment.** Bee charges per chunk it serves us.
-  Without SWAP cheques we can retrieve **only ~25–30 chunks per peer
-  per session** before bee's `disconnect threshold = 1_350_000 wei`
-  triggers `apply debit: disconnect threshold exceeded` and bee drops
-  us. Multi-peer iteration extends the budget to N × 25–30 chunks but
-  it's still finite. **This is the wall in front of large-file
-  retrieval today.** SWAP cheques (issue-only, no on-chain cashing)
-  are the headline of 0.5.0.
+- ~~**SWAP / off-chain BZZ payment.**~~ — protocol-level work landed
+  in 0.5c on `main` (not yet tagged final). zigbee signs EIP-712
+  cheques byte-identical to bee's golden vector and emits them on
+  `/swarm/swap/1.0.0/swap` after every ~20 retrievals from a peer.
+  Issue-only — cashing received cheques on-chain is deferred to 1.0.
+  CLI: `--chequebook PATH` to a JSON credential
+  `{"contract":"0x..","owner_private_key":"0x..","chain_id":<n>}`.
+  Without the flag, accounting still tracks per-peer debt (a one-line
+  toggle to enable issuance later). Live verification against a real
+  deployed chequebook is **0.5c-e** (the v0.5.0-rc2 milestone).
 - **No push.** Cannot upload chunks (`/swarm/pushsync/1.3.1`). Requires
   postage stamps + chain integration. Planned in 0.6.0.
 - ~~**No encrypted-chunk references**~~ — landed in 0.5b on `main`
@@ -199,7 +201,7 @@ and link `libsecp256k1`).
 ```bash
 cd zigbee
 zig build           # development default: Debug
-zig build test      # 87/87
+zig build test      # 104/104
 ```
 
 ### Release modes

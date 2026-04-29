@@ -411,6 +411,36 @@ pub fn signCompact(private_key: [32]u8, hash: [32]u8, sig_out: *[64]u8) !void {
     }
 }
 
+/// Signs a 32-byte digest with secp256k1 and returns a 65-byte recoverable
+/// signature in Ethereum's r(32 BE) || s(32 BE) || v format, where v ∈ {27, 28}.
+/// Unlike `signEthereum`, this does NOT apply any prefix — it signs the digest
+/// you pass in. Use this for EIP-712 typed-data hashes (where the caller has
+/// already computed `keccak256("\x19\x01" ‖ domainHash ‖ structHash)`) and for
+/// any other application that needs to sign a known digest.
+pub fn signDigestRecoverable(
+    private_key: [32]u8,
+    digest: [32]u8,
+    sig_out: *[65]u8,
+) !void {
+    const ctx = secp.secp256k1_context_create(secp.SECP256K1_CONTEXT_SIGN) orelse
+        return error.SecpContextCreationFailed;
+    defer secp.secp256k1_context_destroy(ctx);
+
+    var rsig: secp.secp256k1_ecdsa_recoverable_signature = undefined;
+    if (secp.secp256k1_ecdsa_sign_recoverable(ctx, &rsig, &digest, &private_key, null, null) != 1) {
+        return error.SignatureGenerationFailed;
+    }
+
+    var rs: [64]u8 = undefined;
+    var recid: c_int = 0;
+    if (secp.secp256k1_ecdsa_recoverable_signature_serialize_compact(ctx, &rs, &recid, &rsig) != 1) {
+        return error.SignatureSerializationFailed;
+    }
+
+    @memcpy(sig_out[0..64], &rs);
+    sig_out[64] = @intCast(27 + recid);
+}
+
 /// Signs a 32-byte hash and writes a DER-encoded signature into `sig_out`.
 /// Returns the actual length written (DER signatures are variable, max 72 bytes).
 /// libp2p Secp256k1 mandates DER-encoded signatures.
