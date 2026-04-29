@@ -8,6 +8,7 @@ const store_mod = @import("store.zig");
 const encryption = @import("encryption.zig");
 const credential_mod = @import("credential.zig");
 const accounting_mod = @import("accounting.zig");
+const bzz_address = @import("bzz_address.zig");
 
 /// Default local-store cap. 100 MiB ≈ 25 000 chunks at 4 KiB each;
 /// fits a Pi Zero comfortably and is tunable down for ESP32-class
@@ -45,7 +46,7 @@ const Args = struct {
     peer_ip: []const u8 = "127.0.0.1",
     peer_port: u16 = 1634,
     network_id: u64 = 10,
-    subcommand: enum { none, resolve, retrieve, daemon } = .none,
+    subcommand: enum { none, resolve, retrieve, daemon, identity } = .none,
     /// For `resolve`: the hostname.
     /// For `retrieve`: the chunk reference, hex-encoded — either 64 chars
     /// (unencrypted CAC: 32-byte address) or 128 chars (encrypted: 32-byte
@@ -130,6 +131,8 @@ fn parseArgs(argv: []const []const u8) !Args {
                 a.subcommand = .retrieve;
             } else if (std.mem.eql(u8, arg, "daemon")) {
                 a.subcommand = .daemon;
+            } else if (std.mem.eql(u8, arg, "identity")) {
+                a.subcommand = .identity;
             } else {
                 std.debug.print("unknown subcommand: {s}\n", .{arg});
                 return error.UnknownSubcommand;
@@ -189,6 +192,12 @@ fn printHelp() void {
         \\subcommands:
         \\  (none)              dial the peer, do the handshake, stay connected
         \\  resolve <host>      /dnsaddr lookup, then exit
+        \\  identity            print this node's eth_address, overlay,
+        \\                      and network_id, then exit. Use the
+        \\                      eth_address to deploy a chequebook
+        \\                      contract owned by this zigbee instance
+        \\                      (factory.deploySimpleSwap(eth_address, ...))
+        \\                      so bee accepts cheques from us.
         \\  retrieve <hex> [-o file]
         \\                      retrieve one chunk by content address, then exit.
         \\                      <hex> is 64 chars (unencrypted) or 128 chars
@@ -232,6 +241,30 @@ pub fn main() !void {
             return err;
         },
     };
+
+    // `identity` is purely local — load the persistent key, print all the
+    // addresses derived from it (eth, overlay, peer-id), exit. Useful when
+    // you need the eth address to deploy a chequebook contract owned by
+    // this zigbee instance (0.5c-e). Data lines (`key=value`) go to stdout
+    // so shell scripts can `eval` or pipe; status messages stay on stderr.
+    if (args.subcommand == .identity) {
+        var nonce_local: [bzz_address.NONCE_LEN]u8 = undefined;
+        const id_local = try resolveIdentity(allocator, args.identity_file, &nonce_local);
+
+        var eth_addr: [identity.ETHEREUM_ADDRESS_SIZE]u8 = undefined;
+        id_local.ethereumAddress(&eth_addr);
+
+        var overlay_local: [bzz_address.OVERLAY_LEN]u8 = undefined;
+        id_local.overlayAddress(args.network_id, nonce_local, &overlay_local);
+
+        var out_buf: [128]u8 = undefined;
+        var stdout = std.fs.File.stdout().writer(&out_buf);
+        try stdout.interface.print("eth_address=0x{s}\n", .{std.fmt.bytesToHex(eth_addr, .lower)});
+        try stdout.interface.print("overlay=0x{s}\n", .{std.fmt.bytesToHex(overlay_local, .lower)});
+        try stdout.interface.print("network_id={d}\n", .{args.network_id});
+        try stdout.interface.flush();
+        return;
+    }
 
     // `resolve` is purely local — no network setup needed.
     if (args.subcommand == .resolve) {
@@ -316,16 +349,22 @@ pub fn main() !void {
         } };
     }
 
-    // SWAP accounting (0.5c). Always opened — tracks per-peer debt even
-    // when the user has no chequebook credential, so adding `--chequebook`
-    // later is a one-line toggle, not a state-rebuild.
-    const accounting_root = try std.fs.path.join(allocator, &.{
-        std.posix.getenv("HOME") orelse ".",
-        ".zigbee",
-        "accounting",
-    });
-    defer allocator.free(accounting_root);
-    const accounting_ptr = try accounting_mod.Accounting.openOrCreate(allocator, accounting_root);
+    // SWAP accounting (0.5c).
+    //
+    // Persistence is bound to the chequebook (B2): cumulativePayout is
+    // logically per-(chequebook, peer), so the state file lives next to
+    // the chequebook credential — `chequebook.json` →
+    // `chequebook.state.json`. When no `--chequebook` is set, accounting
+    // runs in ephemeral mode (chunk counters in memory, no persistence).
+    // Adding `--chequebook` later is still a one-line toggle: chunk
+    // counters reset (in-memory only), persistence kicks in on first
+    // cheque issued.
+    const accounting_state_path: ?[]u8 = if (args.chequebook_path) |p|
+        try accounting_mod.deriveStatePath(allocator, p)
+    else
+        null;
+    defer if (accounting_state_path) |p| allocator.free(p);
+    const accounting_ptr = try accounting_mod.Accounting.openOrCreate(allocator, accounting_state_path);
 
     // Load chequebook credential if --chequebook was passed. The credential
     // is small + immutable for the run; we capture it by value.
@@ -336,6 +375,9 @@ pub fn main() !void {
             "[swap] chequebook contract=0x{s} chain_id={d}\n",
             .{ std.fmt.bytesToHex(cred.contract, .lower), cred.chain_id },
         );
+        if (accounting_state_path) |sp| {
+            std.debug.print("[swap] cumulative-payout state file: {s}\n", .{sp});
+        }
         break :blk cred;
     } else blk: {
         std.debug.print("[swap] no --chequebook; accounting tracks but does not issue cheques\n", .{});

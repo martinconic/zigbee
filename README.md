@@ -57,25 +57,28 @@ how forwarding-Kademlia does the heavy lifting on bee's side) is in
 
 ---
 
-**Current: 0.4.2 — operational polish on top of 0.4's bee-compatible
-read-only API.** zigbee connects to the live Swarm network through a
-single bootnode, learns other peers via hive, auto-dials up to N of
-them, holds those connections open, and serves a **bee-compatible
-HTTP API** that existing bee tools / dashboards / curl scripts can
-point at without modification: `/health`, `/readiness`, `/node`,
-`/addresses`, `/peers`, `/topology`, `/chunks/<addr>`, `/bytes/<ref>`,
-`/bzz/<ref>`, `/bzz/<ref>/<path>` and (new in 0.4.2)
-`POST /pingpong/<peer-overlay>` — all byte-identical to bee on the
-same node, modulo on-chain endpoints we can't yet serve. The daemon
-now also exits cleanly on SIGINT/SIGTERM (closes connections with a
-clean FIN; bee no longer logs "broadcast failed"). Release notes:
-[`RELEASE_NOTES_0.3.md`](RELEASE_NOTES_0.3.md) (forwarding-Kademlia
-retrieval + manifest walking),
-[`RELEASE_NOTES_0.4.md`](RELEASE_NOTES_0.4.md) (bee-compatible API),
-[`RELEASE_NOTES_0.4.1.md`](RELEASE_NOTES_0.4.1.md) (persistent
-identity + dead-conn pruning + SOC validation), and
+**Current: 0.5.0 — retrieval-maturity.** Local chunk-store cache,
+encrypted-chunk references, and SWAP cheques (issue-only) — all
+live-verified end-to-end against bee on Sepolia (2026-04-29).
+Built on top of 0.4's bee-compatible read-only HTTP API: `/health`,
+`/readiness`, `/node`, `/addresses`, `/peers`, `/topology`,
+`/chunks/<addr>`, `/bytes/<ref>`, `/bzz/<ref>`, `/bzz/<ref>/<path>`,
+`POST /pingpong/<peer-overlay>`. With 0.5c, large-file retrieval no
+longer caps out at bee's disconnect threshold — zigbee issues
+EIP-712-signed cheques on `/swarm/swap/1.0.0/swap` before the
+threshold trips, byte-identical to bee's golden vector. The daemon
+exits cleanly on SIGINT/SIGTERM and persists per-peer cumulative
+state next to the chequebook credential, so backup/restore works
+as a unit. Release notes:
+[`RELEASE_NOTES_0.5.0.md`](RELEASE_NOTES_0.5.0.md) (retrieval-
+maturity, this release),
 [`RELEASE_NOTES_0.4.2.md`](RELEASE_NOTES_0.4.2.md) (handshake-print
-cleanup + `/pingpong` + graceful shutdown).
+cleanup + `/pingpong` + graceful shutdown),
+[`RELEASE_NOTES_0.4.1.md`](RELEASE_NOTES_0.4.1.md) (persistent
+identity + dead-conn pruning + SOC validation),
+[`RELEASE_NOTES_0.4.md`](RELEASE_NOTES_0.4.md) (bee-compatible API),
+[`RELEASE_NOTES_0.3.md`](RELEASE_NOTES_0.3.md) (forwarding-Kademlia
+retrieval + manifest walking).
 
 **Zigbee never needs to know which peer stores a given chunk.** For
 every `/retrieve/<hex>` or `/bzz/<reference>` request, it sorts its
@@ -103,10 +106,12 @@ For the current operational status / open issues see [`STATUS.md`](STATUS.md).
 
 ---
 
-## What works in 0.4
+## What works in 0.5
 
-zigbee speaks the entire boundary protocol stack you need to talk to bee
-and reassembles multi-chunk files end-to-end:
+zigbee speaks the entire boundary protocol stack you need to talk to bee,
+reassembles multi-chunk files end-to-end, caches retrieved chunks
+locally, decrypts encrypted-chunk references transparently, and pays
+its own way via SWAP cheques against any bee that requires them:
 
 | Layer | Module | Status |
 |---|---|---|
@@ -131,16 +136,22 @@ and reassembles multi-chunk files end-to-end:
 | SOC validation (Single-Owner Chunks) | `src/soc.zig` | ✓ added 0.4.1; CAC then SOC in retrieval, returns `ChunkAddressMismatch` if neither validates |
 | Persistent libp2p identity + bzz nonce | `src/identity.zig` | ✓ added 0.4.1; 64-byte file at `~/.zigbee/identity.key` (atomic write) |
 | Graceful shutdown (SIGINT/SIGTERM) | `src/p2p.zig` | ✓ added 0.4.2; clean FIN on bee side |
+| Local flat-file chunk-store cache | `src/store.zig` | ✓ added 0.5a; LRU at `~/.zigbee/store/`, default 100 MiB, atomic write, `--store-path` / `--store-max-bytes` / `--no-store` |
+| Encrypted-chunk references (`refLength = 64`) | `src/encryption.zig`, `src/joiner.zig`, `src/p2p.zig` | ✓ added 0.5b; keccak256-CTR segment cipher, `joinEncrypted` with branching=64, transparent across `/bytes/`, `/bzz/`, `/retrieve/` |
+| SWAP cheques (issue-only) | `src/cheque.zig`, `src/swap.zig`, `src/accounting.zig`, `src/credential.zig` | ✓ added 0.5c, live-verified 2026-04-29; EIP-712 + secp256k1, `/swarm/swap/1.0.0/swap` initiator, per-peer state at `<chequebook>.state.json`, dynamic cheque sizing from negotiated headers, `--chequebook PATH` |
+| `zigbee identity` subcommand | `src/main.zig` | ✓ added 0.5c; prints eth_address + overlay + network_id (stdout, machine-readable) |
 
 Plus the underlying primitives: secp256k1 (vendored libsecp256k1), Ethereum
 keccak/eip-191/recoverable-sig, BMT chunk addressing, libp2p PeerID multihash,
 multiaddr text/binary parser, hand-rolled protobuf.
 
-**74 unit tests pass** (`zig build test`), including vector tests against
+**107 unit tests pass** (`zig build test`), including vector tests against
 the official Noise XX KAT, bee golden vectors for chunk hashing/overlay
 derivation, the bee `pkg/soc/soc_test.go` SOC vector, end-to-end joiner
-round-trips for single-leaf and multi-leaf chunk-trees, mantaray header-
-detection, and Go-style duration-string golden samples.
+round-trips for single-leaf and multi-leaf chunk-trees, mantaray header
+detection, Go-style duration-string golden samples, bee's encrypted-chunk
+golden vector, bee's `TestSignChequeIntegration` golden vector for
+EIP-712 cheque signing, and SWAP-stream protobuf round-trips.
 
 ## What zigbee is — ultra-light client
 
@@ -151,9 +162,12 @@ mode):
 - ✅ Discovers peers via `/swarm/hive/1.1.0/peers`.
 - ✅ Maintains multiple direct peer connections.
 - ✅ Retrieves single chunks and reassembles multi-chunk files.
-- ❌ No local store — we never store a chunk.
+- ✅ Caches retrieved chunks in a local LRU (0.5a).
+- ✅ Decrypts encrypted-chunk references transparently (0.5b).
+- ✅ Pays bee with SWAP cheques (issue-only, 0.5c).
 - ❌ No retrieval *responder* — we won't serve chunks to others.
-- ❌ No push, no postage stamps, no on-chain integration.
+- ❌ No push, no postage stamps (planned in 0.6).
+- ❌ No on-chain cheque cashing (planned in 1.0).
 
 In bee's terms we're closer to *no-storer client* than *light node*. We
 never decide which bee in the network has the data, never route a chunk
@@ -164,34 +178,28 @@ at one end and the file-reassembler.
 See [`ARCHITECTURE.md`](ARCHITECTURE.md) for diagrams and the threading
 model.
 
-## What 0.4.x does NOT do
+## What 0.5 does NOT do
 
-For the cases below the answer is "0.5+ milestone work" — see
-[`PLAN.md`](PLAN.md) and [`docs/iot-roadmap.html`](docs/iot-roadmap.html).
-The current scope is read-only retrieval; everything below is
-acknowledged but deferred.
+The current scope is **read-only retrieval with off-chain payment**.
+Push (uploads), full chain integration, and the embedded ports are
+later milestones — see [`PLAN.md`](PLAN.md) and
+[`docs/iot-roadmap.html`](docs/iot-roadmap.html).
 
-- ~~**SWAP / off-chain BZZ payment.**~~ — protocol-level work landed
-  in 0.5c on `main` (not yet tagged final). zigbee signs EIP-712
-  cheques byte-identical to bee's golden vector and emits them on
-  `/swarm/swap/1.0.0/swap` after every ~20 retrievals from a peer.
-  Issue-only — cashing received cheques on-chain is deferred to 1.0.
-  CLI: `--chequebook PATH` to a JSON credential
-  `{"contract":"0x..","owner_private_key":"0x..","chain_id":<n>}`.
-  Without the flag, accounting still tracks per-peer debt (a one-line
-  toggle to enable issuance later). Live verification against a real
-  deployed chequebook is **0.5c-e** (the v0.5.0-rc2 milestone).
-- **No push.** Cannot upload chunks (`/swarm/pushsync/1.3.1`). Requires
-  postage stamps + chain integration. Planned in 0.6.0.
-- ~~**No encrypted-chunk references**~~ — landed in 0.5b on `main`
-  (not yet tagged). 128-char hex refs (32-byte addr ‖ 32-byte
-  symmetric key) traverse the encrypted chunk-tree (branching=64)
-  with per-ref keccak256-CTR decryption; works for both
-  `/bytes/<128-hex>` and `/bzz/<128-hex>/...`.
-- ~~**No local chunk store.**~~ — landed in 0.5a on `main` (not yet
-  tagged). Flat-file LRU at `~/.zigbee/store/`, default 100 MiB,
-  configurable via `--store-path` / `--store-max-bytes` /
-  `--no-store`.
+- **No push.** Cannot upload chunks (`/swarm/pushsync/1.3.1`).
+  Requires postage stamps (parser + verifier + issuer + bucket-index
+  tracking) and the pushsync initiator. Planned in 0.6.0.
+- **No on-chain cheque cashing.** zigbee signs cheques but never
+  cashes received ones — retrieval-only clients never receive
+  cheques from bee. When push lands and bee owes us, we'd add the
+  inbound swap handler + `Chequebook.cashCheque` over Ethereum RPC
+  (1.0).
+- **No retrieval responder.** zigbee never serves chunks to others.
+  Not on the IoT roadmap (full-node work).
+- **No ARM Linux release matrix yet.** Cross-compile `vendor/secp256k1`
+  for armv7 / arm64, validate on Pi Zero W. Planned in 0.7.0.
+- **No ESP32 / FreeRTOS port yet.** Planned in 0.7.x once the ARM
+  Linux flow has shaken out.
+- **No browser / wasm32-freestanding target yet.** Planned in 0.8+.
 
 ## Build
 
@@ -201,7 +209,7 @@ and link `libsecp256k1`).
 ```bash
 cd zigbee
 zig build           # development default: Debug
-zig build test      # 104/104
+zig build test      # 107/107
 ```
 
 ### Release modes
@@ -454,55 +462,30 @@ single hex string.
 This is the canonical "Swarm" use case — someone uploaded a file via
 their bee and gave you a reference; you want to read that file.
 
-In 0.1, **this works only for files small enough to fit in a single
-chunk** (≤ 4096 bytes). Larger files are stored as a **chunk tree** —
-the reference points at a root chunk that lists the addresses of child
-chunks; tree traversal is Phase 5 work.
-
-**Small file (≤ 4 KB):**
+zigbee handles single-chunk and multi-chunk files transparently
+(0.3 added the chunk-tree joiner; 0.5b extended it to encrypted refs;
+0.5c removed the per-peer disconnect cap that used to bound large-file
+retrieval). For any reference returned by bee's `POST /bytes` or
+`POST /bzz`, `GET http://127.0.0.1:9090/bzz/<ref>` from a running
+zigbee daemon returns the full file:
 
 ```bash
 # On the bee that has the file (bee with stamps):
 $ curl -s -X POST -H "Swarm-Postage-Batch-Id: <batch-id>" \
-       --data-binary "@small_file.bin" \
-       "http://other-bee:1633/bytes"
+       --data-binary "@my-file.bin" \
+       "http://their-bee:1633/bytes"
 {"reference":"<64-char-hex>"}
-# The "reference" IS the chunk's content address.
 
-# On the machine running zigbee. Either:
-#   (a) dial the same bee (`--peer their-bee:1634`), OR
-#   (b) dial a local bee that's connected to the network, OR
-#   (c) dial a testnet bootnode and hope the chunk is reachable from
-#       its neighborhood (often unreliable — see the bootnode caveat
-#       above).
-$ ./zig-out/bin/zigbee --peer <peer-ip>:1634 --network-id 10 \
-       retrieve <reference> -o small_file_back.bin
-$ cmp small_file_back.bin small_file.bin && echo OK
+# On the machine running zigbee daemon — fetch via the HTTP API.
+# Works for any size; zigbee walks the chunk tree end-to-end.
+$ curl -s -o my-file-back.bin "http://127.0.0.1:9090/bzz/<reference>"
+$ cmp my-file-back.bin my-file.bin && echo OK
 ```
 
-The reference IS the address of the single chunk. zigbee fetches it
-either directly (if the chosen peer has it locally) or via that
-peer's retrieval forwarding.
-
-**Large file (> 4 KB):**
-
-The reference is the address of a `bytes-format` root chunk whose
-payload is a list of `(span, child-address)` entries pointing at lower
-chunks (or further intermediate chunks for files > a few MB). 0.1
-retrieves only the root chunk — you'd see something like 4 KB of
-addresses, not the file content. To get the actual file you currently
-need to:
-
-1. Fetch the root with `zigbee retrieve <root-ref>`
-2. Parse it as a chunk-tree node (parse `span_le_u64 || (entry…)*` where
-   each entry is `(span_le_u64, address[32])`)
-3. Recursively fetch each child until you reach leaf chunks
-4. Concatenate the leaf payloads in order
-
-**This is exactly what Phase 5 will automate.** Until then, 0.1 only
-handles the leaf-chunk case directly. If you need the file end-to-end
-right now, use `bee`'s `/bzz/<reference>` REST endpoint, which does the
-tree traversal for you.
+For encrypted uploads (bee `Swarm-Encrypt: true`), bee returns a
+128-char reference (32-byte address ‖ 32-byte symmetric key); zigbee
+detects the prefix length and decrypts transparently across `/bytes/`,
+`/bzz/`, and the one-shot `retrieve` CLI.
 
 ### Workflow: confirm zigbee is recognised as a peer
 
@@ -647,7 +630,7 @@ chunk.
 
 ### Workflow: retrieve a file someone uploaded from another bee
 
-If a friend has bee, uploads a small (≤ 4 KB) file via:
+If a friend's bee has uploaded a file:
 
 ```bash
 # On their bee:
@@ -657,20 +640,21 @@ $ curl -X POST -H "Swarm-Postage-Batch-Id: <batch>" \
 {"reference":"45e446e17722e22cca976d283e80e8c5d99acf0e412cc7c39ff49be84d3b2b3d"}
 ```
 
-…you can retrieve it without running your own bee, by dialing their
-bee directly:
+…you can retrieve it without running your own bee, by pointing
+zigbee daemon at their bee and using its HTTP API:
 
 ```bash
 $ ./zig-out/bin/zigbee --peer their-bee:1634 --network-id 10 \
-    retrieve 45e446e17722e22cca976d283e80e8c5d99acf0e412cc7c39ff49be84d3b2b3d \
-    -o hello.txt
+    daemon --max-peers 1 --api-port 9090 &
+$ curl -s -o hello.txt "http://127.0.0.1:9090/bzz/45e446e17722e22cca976d283e80e8c5d99acf0e412cc7c39ff49be84d3b2b3d"
 ```
 
-If the file is larger than 4 KB, the reference points at a chunk-tree
-root rather than the data itself; 0.1 retrieves only the root chunk
-(see [Workflow: retrieve a file pushed by another bee](#workflow-retrieve-a-file-pushed-by-another-bee)
-above for the chunk-tree caveat). Phase 5 will add automatic
-tree-traversal for full files.
+This works for any file size — zigbee walks the chunk tree
+end-to-end (0.3 joiner) and uses bee's forwarding-Kademlia to
+fetch chunks from neighbours that hold them. For long-running
+sessions or large files, supply a chequebook credential
+(`--chequebook PATH`) so zigbee can pay bee with SWAP cheques
+when the per-peer threshold is reached (0.5c).
 
 ## Architecture overview
 
@@ -716,10 +700,11 @@ identity).
 
 ## Roadmap
 
-See [`PLAN.md`](PLAN.md). Next planned work is Phase 5
-(pushsync + SOC validation + chunk-tree traversal so the "retrieve a large
-file" workflow lights up). Beyond that: full hive routing, Eth RPC client,
-postage stamps, redistribution.
+See [`PLAN.md`](PLAN.md) and [`docs/iot-roadmap.html`](docs/iot-roadmap.html).
+With 0.5.0 shipped, next planned work is **0.6.0 — push** (postage stamp
+parser + verifier + issuer + `/swarm/pushsync/1.3.1` initiator +
+`POST /bytes` and `POST /bzz` upload routes). After that: 0.7 ARM/MCU
+ports, 0.8 browser target, 1.0 full chain integration.
 
 ## Tests
 
@@ -727,7 +712,7 @@ postage stamps, redistribution.
 zig build test --summary all
 ```
 
-Currently: **58 / 58 passing**.
+Currently: **107 / 107 passing**.
 
 The interesting ones:
 - `noise_kat`: Cacophony Noise_XX_25519_ChaChaPoly_SHA256 vector + a
@@ -747,5 +732,4 @@ The interesting ones:
 
 ## License
 
-(TBD — match whatever license the user wants. Bee is BSD-3-Clause; the
-vendored libsecp256k1 is MIT.)
+BSD-3-Clause (matches bee). Vendored libsecp256k1 is MIT.

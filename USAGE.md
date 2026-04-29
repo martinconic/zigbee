@@ -146,10 +146,13 @@ files).
 
 > **What about big files?** Past ~25–30 chunks (≈ 100 KB at typical
 > proximity pricing) per peer, bee's accounting (`disconnect threshold
-> exceeded`) stops serving us until we pay via SWAP cheques. Zigbee
-> doesn't yet implement SWAP — that's Phase 6. For now: small files
-> work end-to-end; daemon mode with `--max-peers N` extends the budget
-> to roughly N × 25–30 chunks before bee-side accounting kicks in.
+> exceeded`) stops serving us until we pay. As of 0.5c, zigbee can pay
+> via SWAP cheques: pass `--chequebook PATH` to a credential JSON
+> (deploy one with `bee-clients/scripts/06-deploy-zigbee-chequebook.sh`)
+> and zigbee issues a cheque every 3 retrievals on
+> `/swarm/swap/1.0.0/swap`, byte-identical to bee's golden vector.
+> Without `--chequebook`, the budget is still single-peer × ~25–30
+> chunks (or N peers × that with daemon `--max-peers N` fan-out).
 
 ---
 
@@ -192,6 +195,48 @@ This dials, completes the handshake, fetches one chunk, writes it,
 exits. No HTTP API; no chunk-tree reassembly (so for files > 4 KB you'd
 get just the root chunk, which is the list of child references, not
 the file content). For "real" usage prefer daemon mode.
+
+---
+
+## 4b. SWAP cheques — paying bee for retrieval (0.5c)
+
+To retrieve more than ~25–30 chunks per peer per session, zigbee
+needs to issue SWAP cheques on `/swarm/swap/1.0.0/swap`. Pass
+`--chequebook PATH` to a credential JSON of shape:
+
+```json
+{
+  "contract":          "0xCC853F656EdE26b73A9d9e2e710f6C506e12D6FA",
+  "owner_private_key": "0x<32-byte hex>",
+  "chain_id":          11155111
+}
+```
+
+zigbee signs cheques with `owner_private_key` (must match the
+chequebook's on-chain `issuer()`), bee verifies the EIP-712
+signature, calls `factory.VerifyChequebook(contract)` against
+the canonical Sepolia factory, and credits us. Cumulative-payout
+state is persisted next to the credential at
+`<chequebook>.state.json` — back it up with the credential.
+
+To deploy + fund a chequebook the first time, use the
+operator-side script:
+
+```bash
+cd bee-clients/scripts
+./06-deploy-zigbee-chequebook.sh   # one-time, on the operator's laptop
+```
+
+That script reads zigbee's identity (the issuer), calls
+`factory.deploySimpleSwap`, transfers gBZZ to the new contract,
+and writes `~/.zigbee/chequebook.json`. Requires foundry's
+`cast` and ~0.001 Sepolia ETH for gas. Full runbook in
+`bee-clients/scripts/README.md`.
+
+In production the chain interaction stays *off* the device:
+operator runs the script on their laptop, flashes the credential
+onto the device alongside firmware, the device just signs cheques
+locally with the private key it already has.
 
 ---
 
@@ -298,9 +343,18 @@ HTTP status codes:
   the per-attempt log lines (`[retrieve] attempt N/M → peer …`,
   `[retrieve] attempt N failed against …: …`) are the canonical way to
   see whether iteration is firing.
-- **`Ctrl-C`** stops the daemon. Connections drop via TCP RST; bee
-  logs a "broadcast failed" line. Cosmetic.
-- **No persistence yet.** Every restart generates a fresh libp2p
-  identity and a fresh overlay; bee tracks debt per-peer, so a
-  restart resets the per-peer credit window (handy for testing, not
-  what a real client should do).
+- **`Ctrl-C` / SIGTERM** stops the daemon cleanly (0.4.2). Connections
+  close with FIN; bee no longer logs "broadcast failed".
+- **Identity persists across restarts** (0.4.1): `~/.zigbee/identity.key`
+  is a 64-byte file (32-byte secp256k1 key + 32-byte bzz nonce),
+  atomically written. Same overlay every run. Override with
+  `--identity-file PATH`. Print derived addresses with
+  `zigbee identity` (machine-readable `key=value` lines on stdout).
+- **Local chunk store persists across restarts** (0.5a):
+  `~/.zigbee/store/` is an LRU at 100 MiB by default. Override with
+  `--store-path` / `--store-max-bytes` / `--no-store`.
+- **SWAP cheque state persists across restarts** (0.5c, B2):
+  per-peer `last_cumulative_payout_wei` lives in
+  `<chequebook-path>.state.json` next to the credential, not in a
+  separate `accounting/` directory. Backup/restore as a unit:
+  `identity.key + chequebook.json + chequebook.state.json`.

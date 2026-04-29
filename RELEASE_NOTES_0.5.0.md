@@ -1,15 +1,15 @@
-# zigbee 0.5.0 — release notes (in progress)
+# zigbee 0.5.0 — release notes
 
 **Status:** the headline of 0.5.0 is **retrieval-maturity**: local
 chunk store, encrypted-chunk references, and SWAP cheques (issue-only).
-Sub-items land on `main` incrementally; this file accumulates the
-notes as each one ships, and 0.5.0 is tagged when all three are done.
+All three sub-items have landed and SWAP is live-verified end-to-end
+against bee on Sepolia (see 0.5c-e below).
 
 | Sub-item | State |
 |---|---|
 | 0.5a — local flat-file chunk store with basic LRU | ✅ landed |
 | 0.5b — encrypted-chunk references (`refLength = 64`) | ✅ landed |
-| 0.5c — SWAP cheques (issue-only, no on-chain cashing) | ✅ landed (live-test pending — needs deployed chequebook) |
+| 0.5c — SWAP cheques (issue-only, no on-chain cashing) | ✅ landed (live-verified end-to-end on Sepolia 2026-04-29) |
 
 ---
 
@@ -486,39 +486,185 @@ contract — that's bee's job at receive time, via
 
 Total suite: **104 / 104** unit tests pass.
 
+### 0.5c-e — live verification against a deployed chequebook (2026-04-29)
+
+The wire protocol was already byte-identical to bee's golden vector
+in 0.5c-rc1, but rc1 left bee's on-chain solvency check unproven —
+bee's `chequestore.ReceiveCheque` requires the chequebook contract
+to exist *and* hold enough sBZZ to cover `cumulative_payout`.
+
+For 0.5.0 final we wired the operator-side provisioning path and
+ran the full loop on Sepolia:
+
+1. **Deployed a chequebook** via the canonical Sepolia factory at
+   `0x0fF044F6bB4F684a5A149B46D7eC03ea659F98A1`. The factory's
+   `deploySimpleSwap(issuer, hardDepositTimeout=0, nonce=<random>)`
+   emits `SimpleSwapDeployed(address)`; the operator script
+   (`scripts/06-deploy-zigbee-chequebook.sh`) parses that log to
+   get the contract address. zigbee's eth address (derived from the
+   first 32 bytes of `~/.zigbee/identity.key`) is the issuer, so the
+   same key signs cheques *and* owns the chequebook — `ecrecover`
+   on a received cheque returns the chequebook's `issuer()`,
+   bee accepts.
+2. **Funded with 1 BZZ** by ERC20-transferring sBZZ
+   (`0x543dDb01Ba47acB11de34891cD86B675F04840db`) directly to the
+   chequebook contract. No `approve` + `transferFrom` dance needed
+   since we don't use the chequebook's `Deposit()` method.
+3. **Hammered bee with 25× single-chunk retrievals** on
+   `--max-peers 1` against a fresh `~/.zigbee/accounting/`. With
+   `--no-store` to defeat the cache short-circuit, each retrieval
+   hits the network → trips accounting → eventually triggers a
+   cheque on the swap stream.
+4. **Result:** 25/25 retrievals succeeded, **8 cheques accepted by
+   bee** (cumulativePayout 1e14 → 8e14 wei), zero
+   `disconnect threshold exceeded` lines for our overlay. Confirmed
+   via bee's `GET /chequebook/cheque` API:
+   ```
+   "peer": "e94b5c8e…",
+   "lastreceived": {
+     "beneficiary": "0x56250Aef…",
+     "chequebook":  "0xCC853F656EdE26b73A9d9e2e710f6C506e12D6FA",
+     "payout":      "800000000000000"
+   }
+   ```
+   Bee verified the EIP-712 signature, ran `factory.VerifyChequebook`
+   against the on-chain contract, passed the bouncing-cheque check,
+   and credited us. End-to-end SWAP works.
+
+### Dynamic cheque sizing — the rc1 → final fix
+
+rc1 hardcoded `CHEQUE_AMOUNT_WEI = 20 M wei`. That's wrong: bee's
+accounting (payment_threshold, per-chunk debit) is denominated in
+**base units**, not wei, with the conversion
+`credited_base_units = (cumulative_payout - deduction) / exchange_rate`
+applied bee-side using *bee's* announced exchange_rate. With
+exchange_rate = 100 k, a 20 M wei cheque credited only 199 base
+units against a 1.35 M base-unit threshold — bee silently accepted
+but the credit was negligible, and the next few retrievals tipped
+us back over the disconnect threshold.
+
+For 0.5.0 final, `chargeAndMaybeIssue` now negotiates the swap
+headers *first*, then computes
+`delta_wei = exchange_rate × CREDIT_TARGET_BASE_UNITS + deduction`
+where `CREDIT_TARGET_BASE_UNITS = 10 M` (≈7× bee's announced
+threshold, comfortable headroom regardless of what rate the peer
+quotes). The persistence-before-send invariant still holds: build
++ persist happen after negotiate but before sign+send, so a crash
+mid-send re-issues the same cumulative on retry rather than
+diverging.
+
+### Cumulative-payout state lives with the chequebook (B2)
+
+A second issue surfaced during verification: `last_cumulative_payout_wei`
+was stored at `~/.zigbee/accounting/<peer-overlay>.json`, completely
+detached from `~/.zigbee/chequebook.json`. That's a data-model bug.
+cumulativePayout is logically per-(chequebook, peer) — it means
+"*this* chequebook owes *this* peer this much." Storing it elsewhere
+makes the invariant violatable by accident: wipe `accounting/`
+(operator confused, partial restore, fresh-install over an existing
+chequebook) and the next cheque undershoots bee's stored value, bee
+rejects with `cheque cumulativePayout is not increasing`, threshold
+disconnect.
+
+For 0.5.0 final, the state file moved next to the chequebook
+credential: `chequebook.json` → `chequebook.state.json`, single
+JSON document with all peers' cumulatives:
+
+```json
+{ "version": 1,
+  "peers": {
+    "<peer-overlay-hex>": "<cumulative-decimal>"
+  } }
+```
+
+The directory `~/.zigbee/accounting/` no longer exists in 0.5.0+.
+With this layout, the operator backup/restore unit becomes
+`identity.key + chequebook.json + chequebook.state.json` — three
+files, all in `~/.zigbee/`, naturally co-located. Wiping any one
+without the others is the operator's call.
+
+For partial-state recovery (`chequebook.state.json` lost but
+chequebook still bound to bee), zigbee exposes
+`Accounting.seedCumulative(peer, value)` — a wrapper or operator
+script can query bee's `GET /chequebook/cheque` for the
+authoritative stored cumulative and seed our local view to match.
+The bundled `12-verify-zigbee-swap.sh` script demonstrates this
+seeding pattern; it's what a production wrapper would do during
+disaster recovery.
+
 ### What's intentionally NOT here (deferred)
 
-- **Live verification against a real chequebook contract** — needs a
-  one-time chain transaction (deploy a chequebook owned by the cheque
-  signing key, fund it). Captured as **0.5c-e** for `v0.5.0` final.
-  The protocol-level wire-up is verified end-to-end (we open the
-  swap stream, negotiate headers, send the cheque); what's missing
-  is bee actually accepting the cheque on the receive side, which
-  requires bee's `factory.VerifyChequebook` to find the contract
-  on Sepolia.
 - **Receive-side cheque handling.** Retrieval-only clients never
   receive cheques. If we ever push (0.6+) and bee owes us BZZ, we'd
   need an inbound swap handler. Stub for that lives in 1.0.
 - **Cashing received cheques on-chain.** `Chequebook.cashCheque(...)`
   is a chain transaction, deferred to 1.0 per the strategy doc.
-- **Priceoracle integration.** We read bee's exchange rate from the
-  swap stream headers (where it appears) but don't run our own oracle.
-  Means our `CHEQUE_AMOUNT_WEI` is a fixed 10.8M rather than
-  proximity-aware. Acceptable: cheques cover all legitimate debt with
-  margin; bee credits us regardless.
+- **Priceoracle / pricing-handshake threshold parsing.** zigbee
+  reads bee's `payment_threshold` announcement byte-count but
+  doesn't yet capture the value into per-connection state. Cheque
+  sizing instead targets a constant (`CREDIT_TARGET_BASE_UNITS`)
+  that comfortably exceeds any plausible threshold. Refining to
+  threshold-aware sizing is a 0.5.x or 0.6.x ergonomics improvement,
+  not a correctness gap.
+- **Multi-peer SWAP under load.** Per-peer state lives in a single
+  `chequebook.state.json` keyed by peer overlay (independent
+  cumulative tracking). Live-tested only with `--max-peers 1`. Same
+  code paths exercised under multi-peer; no per-peer races we can
+  identify.
+- **Auto-bootstrap from bee on partial-state restore.** Today the
+  operator/wrapper queries bee's `GET /chequebook/cheque` and calls
+  `seedCumulative` (or writes the state file directly, as the
+  test script does). A future ergonomics improvement could plumb
+  this into zigbee's startup path so it self-heals with no wrapper
+  involvement; intentionally deferred — bee's HTTP isn't always
+  reachable at recovery time, and operator-driven restore is more
+  reliable than client-side auto-recovery.
 - **Cumulative-payout overflow handling.** A u256 will not realistically
-  overflow at the 10.8M-wei-per-20-chunks rate (we hit it after ~10²⁰
-  cheques, vastly past any reasonable session); no special handling.
+  overflow at any plausible delta_wei rate (we'd hit it after ≫10²⁰
+  cheques against a single peer); no special handling.
+
+### Operator-side provisioning (new in 0.5.0)
+
+Two new scripts in `bee-clients/scripts/`:
+
+- **`06-deploy-zigbee-chequebook.sh`** — production-shape
+  provisioning. Deploys a fresh chequebook via the canonical Sepolia
+  factory with zigbee's identity-derived eth address as issuer,
+  funds it with sBZZ, writes
+  `~/.zigbee/chequebook.json`. Requires foundry's `cast`. One-time,
+  per-device, on the operator's machine — chain stays off the
+  device. ~$0.001 in Sepolia ETH gas, negligible sBZZ.
+- **`05-extract-bee-chequebook.sh`** — *testing only.* Extracts
+  bee's already-deployed chequebook + decrypts bee's swarm.key,
+  hands them to zigbee. Useful for protocol-wire smoke tests
+  (CI-friendly: no chain action). Cannot actually settle since
+  bee's chequebook is unfunded for our use; bee's
+  bouncing-cheque check rejects.
+- **`12-verify-zigbee-swap.sh`** — drives 25× single-chunk
+  retrievals through zigbee's daemon with `--chequebook` set, then
+  cross-checks bee's `GET /chequebook/cheque` API for an entry
+  matching our overlay + cumulative. The earlier log-grep
+  heuristic was too strict (bee's accept path is silent).
+
+### Other script changes worth noting
+
+`02-buy-stamp.sh`, `03-upload-file.sh`, and `04-upload-encrypted-file.sh`
+now print `export BATCH=…` / `export REF=…` / `export TESTFILE=…`
+instead of bare assignments, so the documented
+`eval "$(./02-buy-stamp.sh)"` pattern actually exports the values
+to subprocesses. Earlier behaviour set them only in the current
+shell — silently broken when the next script ran as a child process.
 
 ### Numbers
 
-- ~1,356 new lines across 4 modules (1,025 implementation + 331 tests).
-- ~180 lines changed in 3 existing files (`src/identity.zig`,
-  `src/main.zig`, `src/p2p.zig`).
+- ~1,356 new lines across 4 new modules (1,025 implementation + 331 tests).
+- ~250 lines changed in 4 existing files (`src/identity.zig`,
+  `src/main.zig`, `src/p2p.zig`, `src/accounting.zig`).
 - ReleaseSafe build: 6.9 MB (was 6.7 MB; +200 KB for the new modules
   and the `cheque/swap/accounting/credential` chain).
-- Live smoke-tested: zigbee daemon starts cleanly with `--chequebook`
-  unset, prints `[swap] no --chequebook; accounting tracks but does
-  not issue cheques`, completes a retrieval, no crashes on the new
-  code paths. Live cheque-issuance against a real chequebook is
-  0.5c-e (rc2 milestone).
+- Live-verified end-to-end on Sepolia: deployed chequebook
+  `0xcc853f656ede26b73a9d9e2e710f6c506e12d6fa`, 25/25 retrievals,
+  8 cheques accepted per session, zero threshold disconnects.
+  Re-runnable across sessions thanks to B2 + script-side seeding.
+  Total suite: **107/107** unit tests pass (104 from rc1 + 3 new
+  for B2: ephemeral mode, deriveStatePath, seedCumulative).

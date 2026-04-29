@@ -344,9 +344,9 @@
     demo tracks that prove the IoT use case end-to-end.
   </p>
   <div class="meta">
-    <span><b>Captured:</b> 2026-04-28</span>
+    <span><b>Captured:</b> 2026-04-28 · <b>Updated:</b> 2026-04-29 (0.5.0 shipped)</span>
     <span><b>Repo:</b> github.com/martinconic/zigbee</span>
-    <span><b>Latest release:</b> v0.4.0</span>
+    <span><b>Latest release:</b> v0.5.0</span>
     <span><b>Headline focus:</b> IoT / embedded</span>
   </div>
 </header>
@@ -462,34 +462,34 @@
           <td>Defence-in-depth. Required prep for reading feeds (a future IoT capability — devices subscribing to feed updates).</td>
         </tr>
 
-        <tr class="grouphead"><td colspan="5">0.5.0 — retrieval maturity (~10 work-weeks FTE)</td></tr>
+        <tr class="grouphead"><td colspan="5">0.5.0 — retrieval maturity (shipped 2026-04-29) ✅</td></tr>
         <tr>
           <td>0.5a</td>
-          <td>Local flat-file chunk store (basic LRU)</td>
+          <td>Local flat-file chunk store (basic LRU) ✅</td>
           <td>~1 wk</td>
           <td><span class="pri essential">essential</span></td>
           <td>IoT devices have intermittent connectivity. A local cache means firmware updates / config can be re-read offline. Also lets one device act as a tiny Swarm cache for nearby devices on the same LAN.</td>
         </tr>
         <tr>
           <td>0.5b</td>
-          <td>Encrypted-chunk references (<code>refLength = 64</code>)</td>
+          <td>Encrypted-chunk references (<code>refLength = 64</code>) ✅</td>
           <td>~2 wk</td>
           <td><span class="pri medium">medium</span></td>
           <td>Useful when telemetry is sensitive (medical, industrial). Not required for unencrypted public data.</td>
         </tr>
         <tr>
           <td>0.5c</td>
-          <td><strong>SWAP cheques (issue-only)</strong></td>
+          <td><strong>SWAP cheques (issue-only) ✅</strong></td>
           <td>~4–5 wk</td>
           <td><span class="pri essential">essential</span></td>
-          <td>Without SWAP a device can pull at most ~25–30 chunks per peer per session — about 100 KB. Useless for firmware (~MB) or sustained sensor sync. <strong>The single biggest IoT unblocker.</strong></td>
+          <td>Without SWAP a device can pull at most ~25–30 chunks per peer per session — about 100 KB. Useless for firmware (~MB) or sustained sensor sync. <strong>The single biggest IoT unblocker.</strong> Live-verified 2026-04-29 against deployed Sepolia chequebook: 25/25 retrievals, 8 cheques cumulative 8.16e14, zero disconnects. State per (chequebook, peer) survives factory-reset via wrapper-driven seeding from bee's <code>/chequebook/cheque</code>.</td>
         </tr>
         <tr>
           <td>0.5.0</td>
-          <td>Cut release</td>
+          <td>Cut release ✅ <code>v0.5.0</code></td>
           <td>—</td>
           <td>—</td>
-          <td>—</td>
+          <td>Pre-provisioning model: chain stays off-device; operator runs script on laptop, flashes credential alongside firmware.</td>
         </tr>
 
         <tr class="grouphead"><td colspan="5">0.6.0 — push (~12 weeks FTE; the IoT-headline milestone)</td></tr>

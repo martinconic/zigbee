@@ -26,7 +26,7 @@ mode:
 | Forwards retrievals (acts as multiplexer) | ✅ | ✅ | ❌ |
 | Pushes own chunks (with stamps) | ✅ | ✅ | ❌ |
 | Pull-syncs from neighbours | ✅ | ✅ | ❌ |
-| Settles via SWAP cheques | ✅ | ✅ | ❌ (next phase) |
+| Settles via SWAP cheques | ✅ | ✅ | ✅ issue-only (0.5c; cashing is 1.0) |
 | Plays redistribution game | ✅ | ❌ | ❌ |
 | Maintains saturated Kademlia table | ✅ | partial | ❌ (only the few peers we've handshaken with) |
 | Speaks libp2p+swarm protocols correctly | ✅ | ✅ | ✅ |
@@ -212,46 +212,62 @@ Key threading points:
   caller-supplied dispatcher. Mutexes guard `connections`,
   `peers`, and `hive_candidate_overlays`.
 
-## 4. The accounting wall
+## 4. The accounting wall (and how 0.5c removes it)
 
-Bee's accounting layer is what makes the network sustainable but it's
-also what bounds zigbee's reach without SWAP support.
+Bee's accounting layer is what makes the network sustainable. Without
+SWAP support, it also caps how much retrieval a no-storer client can
+do per peer.
 
 When zigbee retrieves a chunk from bee A:
 - A's `Pricer.Price(chunk)` charges proximity-weighted price (10 000 ×
   (32 − PO) wei → 10 000 wei when chunk is in A's neighbourhood,
   ~320 000 wei when far). Default `poPrice = 10 000`.
-- A debits zigbee's account with that amount.
-- A's `disconnect threshold` for our debt is **1 350 000 wei**.
-  Once we cross it, A logs `apply debit: disconnect threshold exceeded`
-  and disconnects us with `error="apply debit: disconnect threshold exceeded"`.
+- A debits zigbee's account with that amount in *base accounting units*
+  (not BZZ wei — see below).
+- A's `disconnect threshold` for our debt is **~1 350 000 base units**
+  (announced to us via the pricing handshake on connect; the exact
+  value depends on bee's config). Once we cross it, A logs
+  `apply debit: disconnect threshold exceeded` and disconnects us.
 
-Empirically this caps single-peer retrieval at ~25–30 chunks (~100 KB
-of file content). A 700 KB file with ~175 chunks fails mid-walk.
+**0.5c removes this wall** by issuing SWAP cheques on
+`/swarm/swap/1.0.0/swap` before bee's threshold trips. The cheque is
+an EIP-712-signed promise from a Sepolia chequebook contract; bee
+verifies the signature, calls `factory.VerifyChequebook` against the
+contract on-chain, and credits us if it passes. zigbee initiates the
+cheque every 3 retrievals (`TRIGGER_CHUNKS = 3`) and sizes the
+cumulativePayout from the negotiated headers:
 
-Mitigations that don't fix it:
-- Iteration through `--max-peers` *N* bees → each peer has its own
-  credit window → effective budget is N × ~25 chunks. Helps until you
-  ask for a file larger than that combined budget.
-- Reconnecting (kill+relaunch zigbee) gives a fresh identity → fresh
-  debt counter. But the libp2p key isn't persisted between runs, so
-  this is a workaround, not a feature.
+```
+delta_wei = exchange_rate × CREDIT_TARGET_BASE_UNITS + deduction
+```
 
-The proper fix is Phase 6 — implement `/swarm/swap/1.0.0/swap`, sign
-cheques against a chequebook contract, and exchange them periodically
-to settle accumulated debt. That requires Ethereum RPC integration and
-chequebook-contract bindings, both of which are real chunks of work.
+where `CREDIT_TARGET_BASE_UNITS = 10 M` — about 7× bee's announced
+threshold, comfortable headroom regardless of what rate the peer
+quotes. The state file (`<chequebook>.state.json`, paired with the
+credential) carries `last_cumulative_payout_wei` per peer across
+restarts; backup/restore the chequebook + state file as a unit.
+
+Per-target chain integration stays an outer ring, not zigbee core:
+the operator deploys + funds the chequebook once at provisioning
+time on their laptop (`scripts/06-deploy-zigbee-chequebook.sh`),
+flashes the credential JSON onto the device alongside firmware, and
+zigbee never makes an RPC call from the device.
+
+*Cashing* received cheques on-chain is deferred to 1.0; retrieval-only
+clients never receive cheques (bee never owes us BZZ), so this isn't
+a 0.5 issue.
 
 ## 5. What can and can't be retrieved today
 
 | What | Result |
 |---|---|
 | File ≤ 4 KB uploaded via `bee /bytes` (CAC root, single leaf) | ✅ Works |
-| File between 4 KB and ~100 KB (CAC root + child leaves, fits one peer's credit window) | ✅ Works (verified live: 10 000 B byte-identical) |
-| File 100 KB – ~400 KB on `--max-peers 4` (fits combined credit window) | Works in principle until first peer disconnects; iteration falls through |
-| File > combined credit window | ❌ Fails mid-walk with `BrokenPipe` after bee disconnects us |
+| File between 4 KB and ~100 KB (CAC root + child leaves) | ✅ Works (verified live: 10 000 B byte-identical) |
+| Larger file (any size) without `--chequebook` | Caps at bee's per-peer threshold (~25–30 chunks single-peer). Multi-peer fan-out (`--max-peers N`) extends this linearly but is still finite. |
+| Larger file (any size) **with `--chequebook`** | ✅ Works — zigbee issues a cheque every 3 retrievals before threshold trips, bee credits, retrieval continues (0.5c) |
 | Single SOC chunk (e.g. feed root) via `/retrieve/<hex>` | ✅ Works (returns raw chunk bytes) |
 | SOC reference fed to `/bzz/<ref>` | ❌ 502 with `LikelySocReference` (spans don't make sense; we detect and reject) |
+| Encrypted-chunk reference (128-char hex) via `/bytes/`, `/bzz/`, or `retrieve` | ✅ Works (0.5b) — keccak256-CTR per-ref decryption, branching factor 64 |
 | Encrypted-chunk reference (refLength = 64) | ❌ Not implemented |
 | Reference + path (`/bzz/<ref>/<path>`) | ❌ No manifest walker |
 | Push (upload) | ❌ No postage stamps; on-chain integration deferred |

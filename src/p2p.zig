@@ -444,28 +444,46 @@ pub const P2PNode = struct {
             return;
         };
 
-        // Build + sign first (locked operations on accounting state). The
-        // build call persists the new cumulative atomically *before*
-        // returning, so a crash mid-send won't issue a stale (re-decreasing)
-        // cumulative on retry.
-        const c = try acc.buildCheque(conn.peer_overlay, cb.contract, conn.peer_eth_address);
-        const sig = try cheque_mod.sign(&c, cb.chain_id, cb.owner_private_key);
-        const signed = cheque_mod.SignedCheque{ .cheque = c, .signature = sig };
-
-        // Open a fresh stream on this connection, multistream-select swap,
-        // exchange settlement headers, then send the cheque.
+        // Open the swap stream and negotiate headers FIRST. We need
+        // exchange_rate and deduction to size the cheque correctly: bee's
+        // accounting is denominated in base units, the cheque payout in
+        // BZZ wei, and the conversion (credited_base_units = (payout -
+        // deduction) / exchange_rate) is peer-announced. Building the
+        // cheque before negotiation would force a hardcoded wei amount
+        // that silently scales inversely with whatever rate the peer
+        // announces — see the 2026-04-29 live test where a 20 M wei
+        // cheque against exchange=100 k credited only 199 base units
+        // versus a 1.35 M base-unit threshold.
         const stream = try conn.openStream();
         defer stream.close() catch {};
 
         try multistream.selectOne(stream, swap_mod.PROTOCOL_ID);
         const headers = try swap_mod.negotiate(self.allocator, stream);
+
+        // delta_wei = exchange_rate × CREDIT_TARGET_BASE_UNITS + deduction.
+        // CREDIT_TARGET_BASE_UNITS is set high enough (10 M) to clear any
+        // plausible peer-announced threshold by ~7×; see accounting.zig
+        // for the rationale.
+        const delta_wei: u256 =
+            headers.exchange_rate * @as(u256, accounting_mod.CREDIT_TARGET_BASE_UNITS) +
+            headers.deduction;
+
+        // Build + sign now that we know the right size. The build call
+        // persists the new cumulative atomically *before* returning, so a
+        // crash between build and send won't issue a stale (re-decreasing)
+        // cumulative on retry.
+        const c = try acc.buildCheque(conn.peer_overlay, cb.contract, conn.peer_eth_address, delta_wei);
+        const sig = try cheque_mod.sign(&c, cb.chain_id, cb.owner_private_key);
+        const signed = cheque_mod.SignedCheque{ .cheque = c, .signature = sig };
+
         std.debug.print(
-            "[swap] {s}: negotiated exchange={d} deduction={d}; emitting cheque cumulativePayout={d}\n",
+            "[swap] {s}: negotiated exchange={d} deduction={d}; emitting cheque cumulativePayout={d} (delta={d})\n",
             .{
                 std.fmt.bytesToHex(conn.peer_overlay, .lower),
                 headers.exchange_rate,
                 headers.deduction,
                 c.cumulative_payout,
+                delta_wei,
             },
         );
 

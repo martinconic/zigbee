@@ -1,16 +1,19 @@
 # zigbee — operational status snapshot
 
-**Release:** 0.4.2 (tagged) — operational polish: handshake-print cleanup + `/pingpong/<peer>` HTTP + graceful shutdown ([0.4.2 release notes](RELEASE_NOTES_0.4.2.md), preceded by [0.4.1](RELEASE_NOTES_0.4.1.md) and [0.4](RELEASE_NOTES_0.4.md))
-**In progress on `main` (0.5.0 milestone):** 0.5a local flat-file chunk store **landed** + 0.5b encrypted-chunk refs **landed** + 0.5c SWAP cheques (issue-only) **landed** (see [in-progress 0.5.0 release notes](RELEASE_NOTES_0.5.0.md)). All three sub-items shipped; only **0.5c-e live verification** (needs a deployed chequebook on Sepolia) is pending before tagging final v0.5.0.
+**Release:** 0.5.0 (tagged) — retrieval-maturity: local chunk store + encrypted-chunk refs + SWAP cheques (issue-only), live-verified end-to-end against bee on Sepolia. ([0.5.0 release notes](RELEASE_NOTES_0.5.0.md), preceded by [0.4.2](RELEASE_NOTES_0.4.2.md), [0.4.1](RELEASE_NOTES_0.4.1.md), [0.4](RELEASE_NOTES_0.4.md))
+**Next on `main` (0.6.0 milestone):** push — postage stamp parser + verifier + issuer + `/swarm/pushsync/1.3.1` initiator + `POST /bytes` and `POST /bzz` upload API. ~12 work-weeks FTE. Per-target chain integration stays an outer ring (operator-side provisioning), not zigbee core.
 **Headline focus:** **IoT / embedded.** zigbee is the small-footprint Bee client family for devices that can't run Go bee. Locked in 2026-04-28; framing detail in [`docs/iot-roadmap.html`](docs/iot-roadmap.html).
 **Strategy references:** [`docs/iot-roadmap.html`](docs/iot-roadmap.html) (IoT-specific roadmap) + [`docs/strategy.html`](docs/strategy.html) (full strategic dossier)
 **Date last refreshed:** 2026-04-29
-**Tests:** 104/104 unit tests pass (`zig build test --summary all`)
-**Source size:** ~11,100 lines of Zig across 34 files in `zigbee/src/` (added `src/store.zig`, `src/encryption.zig`, `src/cheque.zig`, `src/swap.zig`, `src/accounting.zig`, `src/credential.zig`)
+**Tests:** 107/107 unit tests pass (`zig build test --summary all`)
+**Source size:** ~11,500 lines of Zig across 34 files in `zigbee/src/` (added in 0.5.0: `src/store.zig`, `src/encryption.zig`, `src/cheque.zig`, `src/swap.zig`, `src/accounting.zig`, `src/credential.zig`)
 **Repository:** https://github.com/martinconic/zigbee (public, BSD-3-Clause)
 **Live status against bee:** verified end-to-end against a local bee
 (`bee/v2.7.2-rc1`, sepolia testnet config) and against the public
-testnet bootnode at `167.235.96.31:32491`.
+testnet bootnode at `167.235.96.31:32491`. SWAP cheques live-verified
+2026-04-29 against a deployed Sepolia chequebook
+(`0xcc853f656ede26b73a9d9e2e710f6c506e12d6fa`): 25/25 retrievals,
+8 cheques accepted, zero threshold disconnects.
 
 ---
 
@@ -27,7 +30,7 @@ first.
 | **Repo (local)** | `/home/calin/work/swarm/bee-clients/zigbee` |
 | **Repo (GitHub)** | https://github.com/martinconic/zigbee |
 | **Default branch** | `main` (in sync with `origin/main`) |
-| **Latest tag** | `v0.4.2` (0.5.0 in progress on `main`) |
+| **Latest tag** | `v0.5.0` (0.6.0 push milestone is the next concrete work on `main`) |
 | **Bee source we cross-reference** | `/home/calin/work/swarm/dev/bee` (Go) |
 | **Spec PDFs** | `/home/calin/work/swarm/bee-clients/docs/{swarm_protocol_spec.pdf, the-book-of-swarm-2.pdf}` |
 | **Local bee binary** | `/home/calin/work/swarm/bee-clients/bee/bee-bin` (built locally with `go build -o ./bee-bin ./cmd/bee/` inside the `bee/` repo; ~70 MB; gitignored). Testnet config: `/home/calin/work/swarm/bee-clients/testnet.yaml`. |
@@ -37,7 +40,7 @@ first.
 
 ```bash
 cd /home/calin/work/swarm/bee-clients/zigbee
-zig build test --summary all   # expect: 104/104 tests passed
+zig build test --summary all   # expect: 107/107 tests passed
 ```
 
 ### What's done (per-release)
@@ -73,52 +76,32 @@ zig build test --summary all   # expect: 104/104 tests passed
   `serveApi` loop + dialer-thread join, so bee no longer logs
   "broadcast failed" when we exit.
   ([RELEASE_NOTES_0.4.2.md](RELEASE_NOTES_0.4.2.md))
-- **0.5a** *(landed on `main`; 0.5.0 not yet tagged)* — local
-  flat-file chunk store with basic LRU. New `src/store.zig`
-  (~470 lines) with atomic write (tempfile + fsync + rename),
-  in-memory hashmap + DLL LRU under one mutex, startup scan
-  rebuilds the index from file mtimes, evicts down to cap on
-  shrink. Wired into `retrieveChunkIterating`: cache lookup
-  first → network fetch on miss → best-effort write-back on
-  success. CLI: `--store-path P`, `--store-max-bytes N`
-  (default 100 MiB), `--no-store`. Six unit tests (round-trip,
-  miss, over-cap eviction, MRU-on-hit, restart-resume,
-  shrunken-cap-evict-down-to). ([in-progress 0.5.0 release
-  notes](RELEASE_NOTES_0.5.0.md))
-- **0.5b** *(landed on `main`; 0.5.0 not yet tagged)* —
-  encrypted-chunk references (`refLength = 64`). New
-  `src/encryption.zig` (~330 lines) implements bee's
-  keccak256-CTR segment cipher (`seg_key = keccak256(keccak256(
-  key ‖ u32_LE(i + init_ctr)))`, init_ctr=0 for data, 128 for
-  span — verified against bee's golden vector). `joiner.zig`
-  grew `joinEncrypted` (recursive: split 64-byte ref → addr +
-  key, fetch, `decryptChunk`, recurse with new key per child;
-  branching factor 64 not 128). `mantaray.zig` + the loader
-  adapter in `p2p.zig` decrypt 64-byte child manifest chunks
-  before parsing. HTTP routes `/bytes/`, `/bzz/`, `/retrieve/`
-  detect 64- vs 128-char hex prefixes; CLI `retrieve` accepts
-  128-char refs and decrypts the leaf. Live-verified end-to-
-  end against the local Go bee on Sepolia testnet — 105 ms cold
-  / 11 ms cached for a 2 KiB single-chunk file via /bytes,
-  byte-identical for 16 KiB multi-chunk and for /bzz with an
-  encrypted manifest. ([in-progress 0.5.0 release
-  notes](RELEASE_NOTES_0.5.0.md))
-- **0.5c** *(landed on `main`; live-test pending; 0.5.0 not yet tagged)* —
-  SWAP cheques (issue-only). New `src/cheque.zig` (~425 lines) does
-  EIP-712 typed-data hashing + secp256k1 recoverable signing; verified
-  byte-identical against bee's `TestSignChequeIntegration` golden
-  vector (priv `634fb5a8…`, payout 500, chainId 1). New `src/swap.zig`
-  (~315 lines) implements the `/swarm/swap/1.0.0/swap` initiator with
-  settlement-headers parsing + `EmitCheque` protobuf. New
-  `src/accounting.zig` (~470 lines) tracks per-peer debt with
-  persistent state at `~/.zigbee/accounting/<overlay>.json` (atomic
-  write); triggers cheque issuance after every 20 retrievals.
-  New `src/credential.zig` (~155 lines) loads the chequebook
-  credential JSON. CLI: `--chequebook PATH`. Without the flag,
-  accounting still tracks debt but no cheques are issued. **0.5c-e
-  live verification** against a real deployed chequebook is the only
-  thing left for v0.5.0 final. ([in-progress 0.5.0 release
-  notes](RELEASE_NOTES_0.5.0.md))
+- **0.5.0** *(tagged 2026-04-29)* — **retrieval-maturity.** Three
+  sub-items shipped together; full prose in
+  [`RELEASE_NOTES_0.5.0.md`](RELEASE_NOTES_0.5.0.md):
+  - **0.5a** local flat-file chunk store with basic LRU. `src/store.zig`,
+    atomic write, hashmap + DLL LRU under one mutex, startup scan
+    rebuilds the index. CLI: `--store-path` / `--store-max-bytes`
+    (default 100 MiB) / `--no-store`. 6 unit tests.
+  - **0.5b** encrypted-chunk references (`refLength = 64`). New
+    `src/encryption.zig` implements bee's keccak256-CTR segment
+    cipher; `joiner.zig` gained `joinEncrypted` (branching factor
+    64); `/bytes/`, `/bzz/`, `/retrieve/` detect 128-char hex prefixes.
+    Live-verified against bee on Sepolia: 105 ms cold / 11 ms cached.
+  - **0.5c** SWAP cheques (issue-only, no on-chain cashing). EIP-712
+    signing in `src/cheque.zig` — byte-identical to bee's
+    `TestSignChequeIntegration` golden vector. Stream protocol in
+    `src/swap.zig` (`/swarm/swap/1.0.0/swap` initiator). Per-peer
+    accounting in `src/accounting.zig`; cumulative-payout state lives
+    next to the chequebook credential at `<chequebook>.state.json`
+    (B2 — wiping `~/.zigbee/store/` no longer corrupts cheque
+    monotonicity). Cheque amount is computed at emit time from the
+    negotiated exchange_rate (`delta_wei = exchange_rate ×
+    CREDIT_TARGET_BASE_UNITS + deduction`) so cheques scale correctly
+    with whatever rate the peer announces. CLI: `--chequebook PATH`.
+    **Live-verified 2026-04-29:** deployed chequebook
+    `0xcc853f656ede26b73a9d9e2e710f6c506e12d6fa` on Sepolia,
+    25/25 retrievals, 8 cheques accepted, zero threshold disconnects.
 
 ### What's open / pending (development plan locked in 2026-04-28)
 
@@ -128,14 +111,8 @@ agreed four-milestone roadmap. Captured in detail at
 HTML page, opens in any browser); the per-task list lives in
 [`PLAN.md`](PLAN.md) §9.
 
-**Right now the next concrete step is 0.5.0 — retrieval-maturity** (~10 work-weeks FTE):
-
-1. Local flat-file chunk store (basic LRU). Foundation for 0.6.
-2. Encrypted-chunk references (`refLength = 64`).
-3. **SWAP cheques (issue-only, no on-chain cashing)** — the headline
-   of 0.5. Unblocks unlimited retrieval per peer. ~4–5 weeks alone.
-
-**Then 0.6.0 — push** (~12 weeks FTE):
+**0.5.0 retrieval-maturity is shipped (2026-04-29).** The next concrete
+step is **0.6.0 — push** (~12 weeks FTE):
 
 4. Postage stamp parser + verifier + issuer + bucket-index tracking.
 5. `/swarm/pushsync/1.3.1` initiator + receipt verification.
@@ -162,10 +139,11 @@ HTML page, opens in any browser); the per-task list lives in
 
 ### Smaller pending items not on the milestone path
 
-All three smaller items shipped in 0.4.2 (handshake-print cleanup,
-`/pingpong/<peer>` HTTP endpoint, graceful shutdown). Nothing
-outstanding here right now — the next concrete work is 0.5.0
-retrieval-maturity above.
+Nothing outstanding here right now — the next concrete work is
+0.6.0 push above. Cross-cutting items that the IoT roadmap calls
+out (resource bounds, persistent state already done, CI cross-
+compile, production logging, ReleaseSmall validation) are paired
+with the milestone they unlock.
 
 ### Conventions / preferences observed in this project
 
@@ -211,7 +189,7 @@ Zigbee is an **ultra-light Swarm client** — even lighter than bee's `light: tr
 | Push (uploads) | ❌ (needs postage stamps + chain integration) |
 | Pullsync, redistribution | ❌ |
 | SOC validation | ✅ (added in 0.4.1c — keccak256(id ‖ owner) verified, mismatch returns ChunkAddressMismatch) |
-| SWAP cheque payment | ✅ added in 0.5c — EIP-712-signed cheques on `/swarm/swap/1.0.0/swap`, byte-identical to bee's `TestSignChequeIntegration` golden vector. Issue-only (no on-chain cashing). Live verification against a real deployed chequebook is 0.5c-e (rc2 milestone). |
+| SWAP cheque payment | ✅ added in 0.5c, live-verified 2026-04-29 against a deployed Sepolia chequebook — EIP-712-signed cheques on `/swarm/swap/1.0.0/swap`, byte-identical to bee's `TestSignChequeIntegration` golden vector. Cheque amount sized at emit-time from the negotiated `exchange_rate × CREDIT_TARGET_BASE_UNITS + deduction`. State (last cumulative_payout per peer) lives at `<chequebook>.state.json`, paired with the credential. Issue-only (cashing on-chain is 1.0). |
 | Mantaray manifest walking (default-document) | ✅ — `/bzz/<manifest-ref>` byte-identical to `bee /bzz/<ref>/` |
 | Manifest path lookups (`/bzz/<ref>/<path>` for multi-file) | ✅ — HTTP route parses trailing path, walker does the lookup, byte-identical to `bee /bzz/<ref>/<path>` (added in 0.4) |
 | Bee-compatible read-only HTTP API (`/health`, `/node`, `/addresses`, `/peers`, `/topology`, `/chunks`, `/bytes`) | ✅ added in 0.4 — drop-in for bee tools |
@@ -267,7 +245,7 @@ bee peers zigbee is connected to.
 | `src/encryption.zig` (0.5b) | Bee-compatible keccak256-CTR segment cipher for encrypted refs. `transform(key, buf, init_ctr)` (involutive: encrypt = decrypt), `decryptChunk(allocator, key, encrypted_chunk)` returns owned `decrypted_span(8) ‖ trimmed-payload`, `encryptedRefCount(span)` for intermediate-chunk ref counts (branching=64). Span uses `init_ctr=128`, data uses `init_ctr=0` — disjoint keystreams. | ✓ 5 unit tests (bee golden vector for 4 KiB zeros, involutive, span/data disjoint, leaf round-trip, ref-count) |
 | `src/cheque.zig` (0.5c) | SWAP cheque data model + EIP-712 typed-data signing. `Cheque{chequebook,beneficiary,cumulative_payout}`, `SignedCheque{cheque,signature}`, `domainSeparator(chain_id)`, `structHash(*Cheque)`, `signingDigest(*Cheque, chain_id)`, `sign` (recoverable secp256k1 with v∈{27,28}), `recoverIssuer`, `marshalJson`/`unmarshalJson` (Go-default `encoding/json` shape — capitalised fields, address `0x..`, payout JSON number, signature base64). | ✓ bee golden vector (`TestSignChequeIntegration`: priv `634fb5a8…`, payout 500, chainId 1, signature `171b63fc…2fc421c`) + recover round-trip + JSON round-trip + u256 decimal helpers |
 | `src/swap.zig` (0.5c) | `/swarm/swap/1.0.0/swap` initiator. `SettlementHeaders{exchange_rate,deduction}` (BE uint256), `parseSettlementHeaders` (tolerates field order; missing-deduction → 0; missing-exchange errors), `negotiate(stream)` (write empty out → read bee's), `sendCheque(stream, *SignedCheque)` (`EmitCheque{Cheque: <json>}` protobuf). No inbound responder — retrieval-only clients never receive cheques. | ✓ headers round-trip with both fields, missing-field defaults, EmitCheque tag/length wrapping |
-| `src/accounting.zig` (0.5c) | Per-peer SWAP accounting state + persistence. `Accounting.openOrCreate`, `charge(peer, n_chunks)` (returns true at trigger), `buildCheque(peer, contract, beneficiary)` (persists new cumulative atomically *before* returning), `markChequeSent`, `snapshot` (read-only). State files at `~/.zigbee/accounting/<overlay-hex>.json` (atomic tempfile + fsync + rename). Trigger = 20 chunks; cheque amount = 10.8M wei (~80% of bee's full-node threshold). | ✓ 4 unit tests (charge below trigger, trigger at 20 + cumulative monotonic, state survives reopen, per-peer isolation) |
+| `src/accounting.zig` (0.5c) | Per-peer SWAP accounting state + persistence. `Accounting.openOrCreate(allocator, ?state_path)`, `charge(peer, n_chunks)` (returns true at trigger), `buildCheque(peer, contract, beneficiary, delta_wei)` (caller computes delta from negotiated headers; persists new cumulative atomically *before* returning), `markChequeSent`, `snapshot`, `seedCumulative(peer, value)` for wrapper-driven recovery, `deriveStatePath(chequebook_path)`. State lives in one JSON document at `<chequebook>.state.json` (B2 — paired with the credential, not a separate `accounting/` tree); peer-overlay → cumulative-decimal. `TRIGGER_CHUNKS = 3`; `CREDIT_TARGET_BASE_UNITS = 10 M` (≈7× bee's announced threshold). Ephemeral mode (no path) when zigbee runs without `--chequebook`. | ✓ 7 unit tests (charge below trigger, trigger + cumulative monotonic, state survives reopen, per-peer isolation, ephemeral mode, seedCumulative + idempotence, deriveStatePath) |
 | `src/credential.zig` (0.5c) | Chequebook credential loader. `ChequebookCredential{contract,owner_private_key,chain_id}`, `load(allocator, path)`. Tolerates `0x`-prefixed and raw hex. Returns typed errors (`InvalidContract`, `InvalidPrivateKey`, `InvalidChainId`, `InvalidCredentialFile`) for malformed fields. | ✓ 3 unit tests (valid file, missing field, malformed hex) |
 | `src/root.zig` | Module entry point | — |
 
@@ -277,21 +255,17 @@ bee peers zigbee is connected to.
 
 These are deliberate gaps, in roughly the order they'd be filled:
 
-- **SWAP cheques (`/swarm/swap/1.0.0/swap`)** — off-chain BZZ payment.
-  Without it, bee's per-peer disconnect threshold (~1 350 000 wei,
-  ≈ 25–30 chunks at typical proximity-pricing) caps how much we can
-  retrieve from a single bee per session. Daemon mode fans out across
-  N peers, multiplying the budget by N, but it's still finite. Real
-  fix: implement cheque exchange + chequebook contract calls over
-  Ethereum RPC.
-- **Manifests / paths.** `GET /bzz/<ref>/<path>` would walk a manifest
-  (mantaray trie) under `<ref>`. Not yet — only raw content addresses.
-- ~~**Encrypted-chunk references**~~ — landed in 0.5b. 64-byte
-  refs (addr ‖ symmetric-key) traverse the encrypted chunk-tree
-  (branching factor 64) with per-ref keccak256-CTR decryption.
-- **Pushsync / postage stamps / on-chain integration.**
-- **Pullsync, redistribution, status protocol.**
-- **Local chunk store** (and the cache layer that goes in front of it).
+- **Pushsync (`/swarm/pushsync/1.3.1`) + postage stamps.** No upload
+  path. The whole 0.6.0 milestone — postage stamp parser + verifier
+  + issuer + bucket-index tracking, then pushsync initiator + receipt
+  verification, then `POST /bytes` and `POST /bzz` upload routes.
+- **Cashing received cheques on-chain.** zigbee never *receives*
+  cheques (retrieval-only client; bee never owes us BZZ), so this
+  is a non-issue today. When push lands and bee owes us, we'd need
+  an inbound swap handler + `Chequebook.cashCheque` on Ethereum RPC
+  — both deferred to 1.0 along with the rest of full chain integration.
+- **Pullsync, redistribution, status protocol.** Full-node-only
+  protocols; not on the IoT roadmap.
 
 ## Live verification commands
 
@@ -337,9 +311,12 @@ curl -s -o /tmp/from-zigbee.bin "http://127.0.0.1:9090/bzz/$REF"
 cmp ./my-file.bin /tmp/from-zigbee.bin && echo "BYTE-IDENTICAL"
 ```
 
-Verified live in this session: **1500-byte and 10 000-byte files
-round-trip byte-identical**; 700 000-byte file fails mid-walk because
-of bee's accounting threshold (Phase 6 SWAP work).
+Verified live: small + multi-chunk + encrypted files all round-trip
+byte-identical against bee on Sepolia. With 0.5c shipped, large files
+no longer fail at bee's disconnect threshold — zigbee issues SWAP
+cheques on `/swarm/swap/1.0.0/swap` before the threshold trips.
+Reproduce with `bee-clients/scripts/{01,02,03,06,12}-*.sh` (see
+that directory's README for the runbook).
 
 ---
 
@@ -377,8 +354,10 @@ of bee's accounting threshold (Phase 6 SWAP work).
 
 - **Hardcoded threshold-announce of 13 500 000 wei.** That's bee's full-
   node default; a real light node would announce something lower and
-  refresh via SWAP cheques. Without SWAP, this number doesn't actually
-  buy us anything beyond the per-peer disconnect threshold (~1.35 M).
+  refresh via SWAP cheques. With SWAP shipped (0.5c), the threshold
+  number announced *to* bee is mostly cosmetic — bee's threshold *for*
+  us (1.35 M base units in the live test) is what governs disconnect,
+  and zigbee now clears that with a cheque every 3 retrievals.
 - **Detached per-request API handler threads not joined on shutdown.**
   0.4.2c joins the dialer thread cleanly and the listener stops
   accepting, but in-flight `/bzz` retrievals running on detached
