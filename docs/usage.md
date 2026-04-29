@@ -36,17 +36,22 @@ uploaded via `bee /bytes`. You want the bytes back. You don't run a
 bee yourself.
 
 ```bash
-# Build (Debug — fine for trying it out)
-cd /path/to/zigbee
-zig build
-# For a production daemon, prefer:
-#   zig build -Doptimize=ReleaseSafe   (~6 MB, safety checks on)
-# See "Build modes" below or in README.md.
+# Get the binary. Two options:
+#   (a) pre-built (no Zig toolchain required) — pick your platform
+#       from https://github.com/martinconic/zigbee/releases/latest
+#         curl -L -o zigbee \
+#              https://github.com/martinconic/zigbee/releases/latest/download/zigbee-linux-amd64-musl
+#         chmod +x zigbee
+#   (b) build from source (Zig 0.15.x + C toolchain):
+#         cd /path/to/zigbee && zig build
+#         # production daemon: zig build -Doptimize=ReleaseSafe
+#         # See "Build modes" below.
 
-# Start the daemon. --peer is the bootstrap entry — any TCP-reachable
-# bee will do. This one is the public Sepolia testnet bootnode.
-./zig-out/bin/zigbee \
-    --peer 167.235.96.31:32491 \
+# Start the daemon. --bootnode resolves /dnsaddr/<host> via DNS-TXT
+# and tries each candidate in order. (--peer ip:port is the precise-
+# dial alternative for connecting to a known specific peer.)
+./zigbee \
+    --bootnode /dnsaddr/sepolia.testnet.ethswarm.org \
     --network-id 10 \
     daemon \
     --max-peers 4 \
@@ -186,8 +191,8 @@ If you don't need the long-running daemon, the CLI also has a one-shot
 retrieve:
 
 ```bash
-./zig-out/bin/zigbee \
-    --peer 167.235.96.31:32491 --network-id 10 \
+./zigbee \
+    --bootnode /dnsaddr/sepolia.testnet.ethswarm.org --network-id 10 \
     retrieve <64-char-hex-address> -o ./chunk.bin
 ```
 
@@ -275,7 +280,7 @@ Same source tree, four output sizes. Pick by deployment context:
 | `zig build -Doptimize=ReleaseFast` | ~5.5 MB | -O3, safety checks **off**. Slightly faster than ReleaseSafe; the right pick for **benchmarks** and for environments where you accept the safety-net tradeoff for raw throughput. |
 | `zig build -Doptimize=ReleaseSmall` | **~1.4 MB** | -Os, safety checks off, aggressive dead-code elimination. **Smallest output** — the choice for embedded targets, tight-bandwidth distribution, container images, and (planned) wasm32-freestanding for in-browser use. |
 
-All four pass the full 62-test suite (`zig build test -Doptimize=…`).
+All four pass the full 113-test suite (`zig build test -Doptimize=…`).
 Release-mode binaries are already stripped; running `strip` afterwards
 saves nothing.
 

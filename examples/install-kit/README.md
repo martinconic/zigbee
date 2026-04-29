@@ -44,8 +44,14 @@ values. The most common reasons to edit `config.sh`:
 Once-only (per zigbee identity):
 
 ```bash
-# 0. build zigbee + generate identity (do this in the zigbee repo root)
-zig build -Doptimize=ReleaseSafe
+# 0. Get the zigbee binary. Two options:
+#    (a) download a pre-built binary (no Zig toolchain required):
+#        curl -L -o zigbee https://github.com/martinconic/zigbee/releases/latest/download/zigbee-linux-amd64-musl
+#        chmod +x zigbee
+#        export ZIGBEE_BIN=$PWD/zigbee     # or set in config.sh
+#    (b) build from source (requires Zig 0.15.x + a C toolchain):
+#        zig build -Doptimize=ReleaseSafe
+
 ./zig-out/bin/zigbee identity     # prints your eth_address — fund this on Sepolia
 
 # 1. verify funds (Sepolia ETH for gas + sBZZ for the chequebook)

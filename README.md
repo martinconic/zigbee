@@ -350,14 +350,20 @@ raw-TCP entries.
 
 ### 3. `zigbee daemon` — connect to the network and serve an HTTP API
 
-Dials `--peer` as a bootnode, runs the full handshake, then drives a
-hive-fed auto-dialer that opens additional connections (default 4) to
-peers learned from the bootnode's broadcasts. Holds those connections
+Dials a bootnode, runs the full handshake, then drives a hive-fed
+auto-dialer that opens additional connections (default 4) to peers
+learned from the bootnode's broadcasts. Holds those connections
 open and exposes them through a tiny HTTP API on `127.0.0.1:9090`.
 
 ```
-zigbee --peer <bootnode-ip>:<port> --network-id <N> \
+# Recommended: --bootnode resolves /dnsaddr/<host> via DNS-TXT and
+# tries each candidate in order until one connects.
+zigbee --bootnode /dnsaddr/<host> --network-id <N> \
        daemon [--max-peers N] [--api-port P]
+
+# Alternative: --peer dials a known specific ip:port (used when you
+# already know the address — local bee, lab setup, fixed IP).
+zigbee --peer <ip>:<port> --network-id <N> daemon ...
 ```
 
 The dialer:
@@ -544,22 +550,30 @@ This is the "no local bee, run as a long-lived process, retrieve via
 HTTP API" workflow. Closest analogue to running `bee` itself.
 
 ```bash
-# Step 1: discover an entry point.
-$ ./zig-out/bin/zigbee resolve sepolia.testnet.ethswarm.org
-resolved 4 multiaddrs for sepolia.testnet.ethswarm.org:
-  /ip4/167.235.96.31/tcp/32491/p2p/QmediEr…    ← raw TCP, usable
-  /ip4/49.12.172.37/tcp/32490/p2p/QmZsYC…       ← raw TCP, usable
+# Step 1: launch the daemon. --bootnode (added in 0.5.1) accepts
+# /dnsaddr/<host>; zigbee resolves the TXT records internally and
+# tries each candidate in turn.
+$ ./zigbee --bootnode /dnsaddr/sepolia.testnet.ethswarm.org \
+           --network-id 10 \
+           daemon --max-peers 4 --api-port 9090 &
 
-# Step 2: launch the daemon.
-$ ./zig-out/bin/zigbee --peer 167.235.96.31:32491 --network-id 10 \
-                      daemon --max-peers 4 --api-port 9090 &
-
-# Step 3: wait for the dialer to fan out (10-30s) and check.
+# Step 2: wait for the dialer to fan out (10-30s) and check.
 $ curl -s http://127.0.0.1:9090/peers | jq '.connected | length'
 4
 
-# Step 4: retrieve.
+# Step 3: retrieve.
 $ curl -s -o chunk.bin "http://127.0.0.1:9090/retrieve/$REFERENCE"
+```
+
+If you want to inspect or pick a specific entry point, the
+`resolve` subcommand is still there:
+
+```bash
+$ ./zigbee resolve sepolia.testnet.ethswarm.org
+resolved 4 multiaddrs for sepolia.testnet.ethswarm.org:
+  /ip4/167.235.96.31/tcp/32491/p2p/QmediEr…    ← raw TCP, usable
+  /ip4/49.12.172.37/tcp/32490/p2p/QmZsYC…       ← raw TCP, usable
+# Then dial one explicitly with --peer 167.235.96.31:32491.
 ```
 
 **The daemon retrieves through forwarding Kademlia.** Even if your
@@ -721,10 +735,13 @@ identity).
 ## Roadmap
 
 See [`docs/plan.md`](docs/plan.md) and [`docs/iot-roadmap.html`](docs/iot-roadmap.html).
-With 0.5.0 shipped, next planned work is **0.6.0 — push** (postage stamp
-parser + verifier + issuer + `/swarm/pushsync/1.3.1` initiator +
-`POST /bytes` and `POST /bzz` upload routes). After that: 0.7 ARM/MCU
-ports, 0.8 browser target, 1.0 full chain integration.
+With the 0.5.x retrieval-maturity line shipped (0.5.0 + 0.5.1 `--bootnode`
++ 0.5.2 multi-platform binaries), next planned work is **0.6.0 — push**
+(postage stamp parser + verifier + issuer + `/swarm/pushsync/1.3.1`
+initiator + `POST /bytes` and `POST /bzz` upload routes). After that:
+0.7 ARM/MCU ports (cross-compile already in place from 0.5.2 — Pi Zero
+W hardware validation is what's left), 0.8 browser target, 1.0 full
+chain integration.
 
 ## Tests
 

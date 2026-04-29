@@ -312,13 +312,32 @@ you can skip this step on a first run.</p>
 
 <!-- ========== STEP 3 ========== -->
 
-<h2><span class="step">Step 3.</span> Build zigbee <span class="pill time">~30 s</span></h2>
+<h2><span class="step">Step 3.</span> Get the zigbee binary <span class="pill time">~30 s</span></h2>
+
+<p>Two options.</p>
+
+<p><strong>Option A — pre-built binary (recommended; no Zig toolchain
+required).</strong> Pick the file that matches your platform from
+<a href="https://github.com/martinconic/zigbee/releases/latest">the
+latest release page</a>:</p>
+
+<pre><code># Linux x86_64 example — swap the URL for your platform:
+curl -L -o ~/swarm/zigbee/zig-out/bin/zigbee \
+     https://github.com/martinconic/zigbee/releases/latest/download/zigbee-linux-amd64-musl
+chmod +x ~/swarm/zigbee/zig-out/bin/zigbee</code></pre>
+
+<p>The release page has six binaries (Linux x86_64-musl, arm64-musl,
+arm64-gnu, armv7-musl for Pi Zero W, macOS x86_64, macOS arm64) plus
+<code>SHA256SUMS</code>. Sizes 1.9–6.8 MB.</p>
+
+<p><strong>Option B — build from source</strong> (needs Zig 0.15.x
+and a C toolchain):</p>
 
 <pre><code>cd ~/swarm/zigbee
 zig build -Doptimize=ReleaseSafe</code></pre>
 
-<p>Output binary is at <code>~/swarm/zigbee/zig-out/bin/zigbee</code>
-(~6 MB). Verify it runs:</p>
+<p>Either way the binary lands at
+<code>~/swarm/zigbee/zig-out/bin/zigbee</code>. Verify it runs:</p>
 
 <pre><code>./zig-out/bin/zigbee --help</code></pre>
 

@@ -57,7 +57,10 @@ need() {
 ensure_zigbee_built() {
     if [ ! -x "$ZIGBEE_BIN" ]; then
         echo "error: zigbee binary not found at $ZIGBEE_BIN" >&2
-        echo "  build it first: (cd $ZIGBEE_REPO && zig build -Doptimize=ReleaseSafe)" >&2
+        echo "  either:" >&2
+        echo "    (a) download a pre-built binary from https://github.com/martinconic/zigbee/releases/latest" >&2
+        echo "        and point ZIGBEE_BIN at it (in config.sh or env), or" >&2
+        echo "    (b) build from source: (cd $ZIGBEE_REPO && zig build -Doptimize=ReleaseSafe)" >&2
         exit 1
     fi
 }

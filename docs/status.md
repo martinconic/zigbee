@@ -133,17 +133,23 @@ agreed four-milestone roadmap. Captured in detail at
 opens in any browser); the per-task list lives in
 [`plan.md`](plan.md) §9.
 
-**0.5.0 retrieval-maturity is shipped (2026-04-29).** The next concrete
-step is **0.6.0 — push** (~12 weeks FTE):
+**The 0.5.x retrieval-maturity line is shipped (2026-04-29):** 0.5.0
+shipped chunk store + encrypted refs + SWAP cheques; 0.5.1 added
+`--bootnode`; 0.5.2 cross-compiled the build and shipped six pre-built
+binaries to the GitHub Releases page. The next concrete step is
+**0.6.0 — push** (~12 weeks FTE):
 
 4. Postage stamp parser + verifier + issuer + bucket-index tracking.
 5. `/swarm/pushsync/1.3.1` initiator + receipt verification.
 6. HTTP `POST /bytes`, `POST /bzz` upload API (with manifest building).
 
-**Then 0.7.0 — embedded** (IoT headline; ~5 weeks ARM + ~4 weeks MCU):
+**Then 0.7.0 — embedded** (IoT headline; ~4 weeks MCU; the ~1 week of
+ARM Linux work was largely done in 0.5.2):
 
-7. ARM Linux release matrix (cross-compile libsecp256k1 for armv7
-   + arm64; validate on Pi Zero; GitHub Actions release artifacts).
+7. ARM Linux release matrix — cross-compile + GitHub Actions release
+   artifacts already shipped in 0.5.2 (six binaries on every tag push).
+   What's left for 0.7a: hardware-validate on actual Pi Zero W +
+   document recommended `--max-peers` / `--store-max-bytes` per target.
 8. ESP32-S3 spike — *planned* (re-classed from "gated" 2026-04-28
    when IoT was locked in as the headline focus).
 
