@@ -1,12 +1,12 @@
 # zigbee — operational status snapshot
 
 **Release:** 0.4.2 (tagged) — operational polish: handshake-print cleanup + `/pingpong/<peer>` HTTP + graceful shutdown ([0.4.2 release notes](RELEASE_NOTES_0.4.2.md), preceded by [0.4.1](RELEASE_NOTES_0.4.1.md) and [0.4](RELEASE_NOTES_0.4.md))
-**In progress on `main` (0.5.0 milestone):** 0.5a local flat-file chunk store **landed** (see [in-progress 0.5.0 release notes](RELEASE_NOTES_0.5.0.md)); 0.5b encrypted-chunk refs + 0.5c SWAP cheques still to ship before tagging 0.5.0.
+**In progress on `main` (0.5.0 milestone):** 0.5a local flat-file chunk store **landed** + 0.5b encrypted-chunk refs **landed** (see [in-progress 0.5.0 release notes](RELEASE_NOTES_0.5.0.md)); 0.5c SWAP cheques still to ship before tagging 0.5.0.
 **Headline focus:** **IoT / embedded.** zigbee is the small-footprint Bee client family for devices that can't run Go bee. Locked in 2026-04-28; framing detail in [`docs/iot-roadmap.html`](docs/iot-roadmap.html).
 **Strategy references:** [`docs/iot-roadmap.html`](docs/iot-roadmap.html) (IoT-specific roadmap) + [`docs/strategy.html`](docs/strategy.html) (full strategic dossier)
 **Date last refreshed:** 2026-04-29
-**Tests:** 80/80 unit tests pass (`zig build test --summary all`)
-**Source size:** ~9,300 lines of Zig across 29 files in `zigbee/src/` (added `src/store.zig`)
+**Tests:** 87/87 unit tests pass (`zig build test --summary all`)
+**Source size:** ~9,700 lines of Zig across 30 files in `zigbee/src/` (added `src/store.zig`, `src/encryption.zig`)
 **Repository:** https://github.com/martinconic/zigbee (public, BSD-3-Clause)
 **Live status against bee:** verified end-to-end against a local bee
 (`bee/v2.7.2-rc1`, sepolia testnet config) and against the public
@@ -30,14 +30,14 @@ first.
 | **Latest tag** | `v0.4.2` (0.5.0 in progress on `main`) |
 | **Bee source we cross-reference** | `/home/calin/work/swarm/dev/bee` (Go) |
 | **Spec PDFs** | `/home/calin/work/swarm/bee-clients/docs/{swarm_protocol_spec.pdf, the-book-of-swarm-2.pdf}` |
-| **Local bee binary** | `/tmp/bee` (testnet config: `/home/calin/work/swarm/bee-clients/testnet.yaml`) |
-| **Test stamp batch (already paid for)** | `81443226e94a19784a40ec3d67f019bf17f22e7d1903d21a915d9e35e5fa8430` |
+| **Local bee binary** | `/home/calin/work/swarm/bee-clients/bee/bee-bin` (built locally with `go build -o ./bee-bin ./cmd/bee/` inside the `bee/` repo; ~70 MB; gitignored). Testnet config: `/home/calin/work/swarm/bee-clients/testnet.yaml`. |
+| **Test stamp batch** | Buy a fresh one each session — older batches expire / get cleaned up. `curl -X POST http://127.0.0.1:1633/stamps/100000000/17` then poll `/stamps/<id>` until `usable: true` (~2 min on Sepolia). |
 
 ### Smoke test in one command (verifies everything still works)
 
 ```bash
 cd /home/calin/work/swarm/bee-clients/zigbee
-zig build test --summary all   # expect: 80/80 tests passed
+zig build test --summary all   # expect: 87/87 tests passed
 ```
 
 ### What's done (per-release)
@@ -84,6 +84,24 @@ zig build test --summary all   # expect: 80/80 tests passed
   (default 100 MiB), `--no-store`. Six unit tests (round-trip,
   miss, over-cap eviction, MRU-on-hit, restart-resume,
   shrunken-cap-evict-down-to). ([in-progress 0.5.0 release
+  notes](RELEASE_NOTES_0.5.0.md))
+- **0.5b** *(landed on `main`; 0.5.0 not yet tagged)* —
+  encrypted-chunk references (`refLength = 64`). New
+  `src/encryption.zig` (~330 lines) implements bee's
+  keccak256-CTR segment cipher (`seg_key = keccak256(keccak256(
+  key ‖ u32_LE(i + init_ctr)))`, init_ctr=0 for data, 128 for
+  span — verified against bee's golden vector). `joiner.zig`
+  grew `joinEncrypted` (recursive: split 64-byte ref → addr +
+  key, fetch, `decryptChunk`, recurse with new key per child;
+  branching factor 64 not 128). `mantaray.zig` + the loader
+  adapter in `p2p.zig` decrypt 64-byte child manifest chunks
+  before parsing. HTTP routes `/bytes/`, `/bzz/`, `/retrieve/`
+  detect 64- vs 128-char hex prefixes; CLI `retrieve` accepts
+  128-char refs and decrypts the leaf. Live-verified end-to-
+  end against the local Go bee on Sepolia testnet — 105 ms cold
+  / 11 ms cached for a 2 KiB single-chunk file via /bytes,
+  byte-identical for 16 KiB multi-chunk and for /bzz with an
+  encrypted manifest. ([in-progress 0.5.0 release
   notes](RELEASE_NOTES_0.5.0.md))
 
 ### What's open / pending (development plan locked in 2026-04-28)
@@ -183,7 +201,7 @@ Zigbee is an **ultra-light Swarm client** — even lighter than bee's `light: tr
 | Bee-compatible read-only HTTP API (`/health`, `/node`, `/addresses`, `/peers`, `/topology`, `/chunks`, `/bytes`) | ✅ added in 0.4 — drop-in for bee tools |
 | `POST /pingpong/<peer-overlay>` (bee `pkg/api/pingpong.go`) | ✅ added in 0.4.2 — opens a stream, runs `/ipfs/ping/1.0.0`, returns `{"rtt":"<duration>"}` Go-style |
 | Graceful shutdown on SIGINT/SIGTERM | ✅ added in 0.4.2 — atomic flag + poll-gated `serveApi` + dialer-thread join → bee no longer logs "broadcast failed" |
-| Encrypted-chunk references | ❌ (refLength=64 not handled) |
+| Encrypted-chunk references | ✅ added in 0.5b — joiner+mantaray walk 64-byte refs, `decryptChunk` (keccak256-CTR) restores plaintext; both `/bytes/<128-hex>` and `/bzz/<128-hex>/...` work transparently |
 
 In bee's terms zigbee is closer to *no-storer client* than *light node*;
 bee logs us with `light=" (light)"` once handshake reports `full_node = false`.
@@ -230,6 +248,7 @@ bee peers zigbee is connected to.
 | `src/main.zig` | CLI — `zigbee [resolve|retrieve|daemon]`; **0.5a:** `--store-path`, `--store-max-bytes`, `--no-store` | — |
 | `src/p2p.zig` (0.4.2 additions) | `POST /pingpong/<overlay>` route + `formatGoDuration` helper + `g_shutdown` atomic + SIGINT/SIGTERM handler + poll-gated `serveApi` + joinable dialer thread | ✓ unit (`formatGoDuration` golden samples) |
 | `src/store.zig` (0.5a) | Local flat-file chunk store with basic LRU. `<root>/<2-hex>/<64-hex>` layout, atomic write (tempfile + fsync + rename), hashmap + DLL index under one mutex, startup scan rebuilds index from file mtimes. `Store.openOrCreate` / `get` / `put` / `deinit`. | ✓ 6 unit tests (round-trip, miss, eviction, MRU-on-hit, restart-resume, shrunken-cap) |
+| `src/encryption.zig` (0.5b) | Bee-compatible keccak256-CTR segment cipher for encrypted refs. `transform(key, buf, init_ctr)` (involutive: encrypt = decrypt), `decryptChunk(allocator, key, encrypted_chunk)` returns owned `decrypted_span(8) ‖ trimmed-payload`, `encryptedRefCount(span)` for intermediate-chunk ref counts (branching=64). Span uses `init_ctr=128`, data uses `init_ctr=0` — disjoint keystreams. | ✓ 5 unit tests (bee golden vector for 4 KiB zeros, involutive, span/data disjoint, leaf round-trip, ref-count) |
 | `src/root.zig` | Module entry point | — |
 
 ---
@@ -247,8 +266,9 @@ These are deliberate gaps, in roughly the order they'd be filled:
   Ethereum RPC.
 - **Manifests / paths.** `GET /bzz/<ref>/<path>` would walk a manifest
   (mantaray trie) under `<ref>`. Not yet — only raw content addresses.
-- **Encrypted-chunk references** (refLength = 64; second 32 bytes are
-  the decryption key). Joiner only handles refLength = 32.
+- ~~**Encrypted-chunk references**~~ — landed in 0.5b. 64-byte
+  refs (addr ‖ symmetric-key) traverse the encrypted chunk-tree
+  (branching factor 64) with per-ref keccak256-CTR decryption.
 - **Pushsync / postage stamps / on-chain integration.**
 - **Pullsync, redistribution, status protocol.**
 - **Local chunk store** (and the cache layer that goes in front of it).
@@ -278,8 +298,9 @@ curl -s -o chunk.bin "http://127.0.0.1:9090/bzz/<reference>"
 ### End-to-end against a local bee (file upload + retrieval)
 
 ```bash
-# Start bee; wait for API; buy a small stamp; upload a file.
-/tmp/bee start --config testnet.yaml > /tmp/bee.log 2>&1 &
+# Build (once) + start bee. Wait for API + readiness, buy a small stamp, upload a file.
+cd /home/calin/work/swarm/bee-clients/bee && go build -o ./bee-bin ./cmd/bee/ && cd ..
+./bee/bee-bin start --config testnet.yaml > /tmp/bee.log 2>&1 &
 until curl -sf http://127.0.0.1:1633/health >/dev/null; do sleep 1; done
 BATCH=$(curl -s -X POST http://127.0.0.1:1633/stamps/100000000/17 | jq -r .batchID)
 # Wait ~2 minutes for stamp to confirm on-chain.

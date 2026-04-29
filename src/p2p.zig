@@ -19,6 +19,7 @@ const bmt = @import("bmt.zig");
 const connection_mod = @import("connection.zig");
 const Connection = connection_mod.Connection;
 const store_mod = @import("store.zig");
+const encryption = @import("encryption.zig");
 const net = std.net;
 
 /// libp2p protocols this node speaks. Advertised in Identify and accepted on
@@ -61,6 +62,11 @@ pub const PostHandshakeAction = union(enum) {
     none,
     retrieve: struct {
         address: [bmt.HASH_SIZE]u8,
+        /// Optional decryption key. Present when the user passed a
+        /// 128-char hex reference (32-byte addr ‖ 32-byte symmetric key).
+        /// When present, the retrieved chunk is decrypted before being
+        /// written/printed.
+        key: ?[encryption.KEY_LEN]u8 = null,
         out_path: ?[]const u8, // null ⇒ print to stdout as hex
     },
 };
@@ -412,7 +418,7 @@ pub const P2PNode = struct {
 
         switch (action) {
             .retrieve => |r| {
-                runRetrievalAgainst(conn, self.allocator, r.address, r.out_path) catch |e| {
+                runRetrievalAgainst(conn, self.allocator, r.address, r.key, r.out_path) catch |e| {
                     std.debug.print("[retrieve] failed: {any}\n", .{e});
                 };
                 return;
@@ -548,12 +554,14 @@ fn runRetrievalAgainst(
     conn: *Connection,
     allocator: std.mem.Allocator,
     chunk_address: [bmt.HASH_SIZE]u8,
+    chunk_key: ?[encryption.KEY_LEN]u8,
     out_path: ?[]const u8,
 ) !void {
     std.debug.print(
-        "[retrieve] requesting chunk {s} via peer {s}\n",
+        "[retrieve] requesting chunk {s}{s} via peer {s}\n",
         .{
             std.fmt.bytesToHex(chunk_address, .lower),
+            if (chunk_key != null) " (encrypted)" else "",
             std.fmt.bytesToHex(conn.peer_overlay, .lower),
         },
     );
@@ -576,14 +584,33 @@ fn runRetrievalAgainst(
         .{ rc.data.len, rc.span },
     );
 
+    // For encrypted single-chunk retrieval we need to feed
+    // decryptChunk the wire-format chunk (span(8 LE) ‖ payload).
+    // retrieval.request returns the payload separately, so reconstruct.
+    var owned_plain: ?[]u8 = null;
+    defer if (owned_plain) |p| allocator.free(p);
+    const data_to_write: []const u8 = if (chunk_key) |k| blk: {
+        const wire = try allocator.alloc(u8, 8 + rc.data.len);
+        defer allocator.free(wire);
+        std.mem.writeInt(u64, wire[0..8], rc.span, .little);
+        @memcpy(wire[8..], rc.data);
+        const plain = encryption.decryptChunk(allocator, k, wire) catch |e| {
+            std.debug.print("[retrieve] decrypt failed: {any}\n", .{e});
+            return e;
+        };
+        owned_plain = plain;
+        // decryptChunk returns span(8) ‖ payload — strip the span for output.
+        break :blk plain[8..];
+    } else rc.data;
+
     if (out_path) |p| {
         const f = try std.fs.cwd().createFile(p, .{});
         defer f.close();
-        try f.writeAll(rc.data);
-        std.debug.print("[retrieve] wrote {d} bytes to {s}\n", .{ rc.data.len, p });
+        try f.writeAll(data_to_write);
+        std.debug.print("[retrieve] wrote {d} bytes to {s}\n", .{ data_to_write.len, p });
     } else {
         std.debug.print("[retrieve] data (hex): ", .{});
-        for (rc.data) |b| std.debug.print("{x:0>2}", .{b});
+        for (data_to_write) |b| std.debug.print("{x:0>2}", .{b});
         std.debug.print("\n", .{});
     }
 }
@@ -989,47 +1016,87 @@ fn routeGet(node: *P2PNode, stream: net.Stream, path: []const u8) !void {
     }
     if (std.mem.startsWith(u8, path, "/bytes/")) {
         const hex = path[7..];
-        const addr = parseHexAddress(stream, hex) orelse return;
-        return handleBytes(node, stream, addr);
+        const ref = parseHexRef(stream, hex) orelse return;
+        return handleBytes(node, stream, ref);
     }
     if (std.mem.startsWith(u8, path, "/bzz/")) {
-        // /bzz/<64-hex> — default file
-        // /bzz/<64-hex>/<path> — manifest path lookup
+        // /bzz/<64-hex>            — unencrypted, default file
+        // /bzz/<128-hex>           — encrypted (32 addr ‖ 32 key), default file
+        // /bzz/<64|128-hex>/<path> — manifest path lookup
         const rest = path[5..];
-        if (rest.len < 64) {
-            try writeHttp(stream, 400, "text/plain", "reference must be 64 hex chars\n");
+        const ref_hex_len: usize = if (rest.len >= 128 and (rest.len == 128 or rest[128] == '/'))
+            128
+        else if (rest.len >= 64 and (rest.len == 64 or rest[64] == '/'))
+            64
+        else
+            0;
+        if (ref_hex_len == 0) {
+            try writeHttp(stream, 400, "text/plain", "reference must be 64 (CAC) or 128 (encrypted) hex chars\n");
             return;
         }
-        const hex = rest[0..64];
-        var addr: [bmt.HASH_SIZE]u8 = undefined;
-        _ = std.fmt.hexToBytes(&addr, hex) catch {
-            try writeHttp(stream, 400, "text/plain", "invalid hex\n");
-            return;
-        };
-        if (rest.len == 64 or std.mem.eql(u8, rest[64..], "/")) {
-            return handleBzzApi(node, stream, addr, "");
-        }
-        if (rest[64] != '/') {
+        const ref = parseHexRef(stream, rest[0..ref_hex_len]) orelse return;
+        const after = rest[ref_hex_len..];
+        const inner_path = if (after.len == 0 or std.mem.eql(u8, after, "/"))
+            ""
+        else if (after[0] == '/')
+            after[1..]
+        else {
             try writeHttp(stream, 400, "text/plain", "expected '/<path>' after reference\n");
             return;
-        }
-        const inner_path = rest[65..]; // strip the leading "/"
-        return handleBzzApi(node, stream, addr, inner_path);
+        };
+        return handleBzzApi(node, stream, ref, inner_path);
     }
 
     // Zigbee-native legacy alias
     if (std.mem.startsWith(u8, path, "/retrieve/")) {
         const hex = path[10..];
-        const addr = parseHexAddress(stream, hex) orelse return;
-        return handleRetrieveApi(node, stream, addr);
+        const ref = parseHexRef(stream, hex) orelse return;
+        return handleRetrieveApi(node, stream, ref);
     }
 
     try writeHttp(stream, 404, "text/plain", "unknown path\n");
 }
 
-/// Validate a 64-char hex chunk address. Writes the HTTP error response
-/// and returns null on failure; returns the parsed 32-byte address on
-/// success.
+/// A Swarm reference. 32-byte addr always; 32-byte symmetric key only
+/// when the ref came from an encrypted upload (`Swarm-Encrypt: true`).
+pub const Ref = struct {
+    addr: [bmt.HASH_SIZE]u8,
+    key: ?[encryption.KEY_LEN]u8 = null,
+
+    pub fn isEncrypted(self: Ref) bool {
+        return self.key != null;
+    }
+};
+
+/// Parse a 64-char (CAC) or 128-char (encrypted, addr ‖ key) hex
+/// reference. Writes the HTTP error response and returns null on failure.
+fn parseHexRef(stream: net.Stream, hex: []const u8) ?Ref {
+    if (hex.len == 64) {
+        var addr: [bmt.HASH_SIZE]u8 = undefined;
+        _ = std.fmt.hexToBytes(&addr, hex) catch {
+            writeHttp(stream, 400, "text/plain", "invalid hex\n") catch {};
+            return null;
+        };
+        return .{ .addr = addr };
+    }
+    if (hex.len == 128) {
+        var raw: [encryption.REFERENCE_SIZE]u8 = undefined;
+        _ = std.fmt.hexToBytes(&raw, hex) catch {
+            writeHttp(stream, 400, "text/plain", "invalid hex\n") catch {};
+            return null;
+        };
+        var addr: [bmt.HASH_SIZE]u8 = undefined;
+        var key: [encryption.KEY_LEN]u8 = undefined;
+        @memcpy(&addr, raw[0..bmt.HASH_SIZE]);
+        @memcpy(&key, raw[bmt.HASH_SIZE..]);
+        return .{ .addr = addr, .key = key };
+    }
+    writeHttp(stream, 400, "text/plain", "reference must be 64 (CAC) or 128 (encrypted) hex chars\n") catch {};
+    return null;
+}
+
+/// 32-byte-only variant for endpoints that take a chunk address rather
+/// than a file reference (`/chunks/<addr>` and `POST /pingpong/<peer>`).
 fn parseHexAddress(stream: net.Stream, hex: []const u8) ?[bmt.HASH_SIZE]u8 {
     if (hex.len != 64) {
         writeHttp(stream, 400, "text/plain", "address must be 64 hex chars\n") catch {};
@@ -1046,9 +1113,9 @@ fn parseHexAddress(stream: net.Stream, hex: []const u8) ?[bmt.HASH_SIZE]u8 {
 fn handleRetrieveApi(
     node: *P2PNode,
     stream: net.Stream,
-    addr: [bmt.HASH_SIZE]u8,
+    ref: Ref,
 ) !void {
-    var rc = node.retrieveChunkIterating(addr) catch |e| {
+    var rc = node.retrieveChunkIterating(ref.addr) catch |e| {
         try writeHttpFmt(
             stream,
             if (e == error.NoConnectedPeers) @as(u16, 503) else @as(u16, 502),
@@ -1059,6 +1126,40 @@ fn handleRetrieveApi(
         return;
     };
     defer rc.deinit();
+
+    // Decrypt for encrypted refs. The retrieval module returned the
+    // ciphertext (BMT was validated against the encrypted bytes, which
+    // is what bee hashes for the on-wire address). The legacy
+    // `/retrieve/<hex>` endpoint exposes the raw single-chunk bytes
+    // without the 8-byte span; for encrypted refs we hand back the
+    // *decrypted* payload trimmed to the real span.
+    if (ref.key) |k| {
+        // Re-serialize span(8) ‖ data so encryption.decryptChunk can do
+        // its trim-to-real-span work in one place.
+        const wire = try node.allocator.alloc(u8, bmt.SPAN_SIZE + rc.data.len);
+        defer node.allocator.free(wire);
+        std.mem.writeInt(u64, wire[0..bmt.SPAN_SIZE], rc.span, .little);
+        @memcpy(wire[bmt.SPAN_SIZE..], rc.data);
+
+        const decrypted = encryption.decryptChunk(node.allocator, k, wire) catch |e| {
+            try writeHttpFmt(stream, 502, "text/plain", "decrypt failed: {any}\n", .{e});
+            return;
+        };
+        defer node.allocator.free(decrypted);
+
+        const decrypted_span = std.mem.readInt(u64, decrypted[0..bmt.SPAN_SIZE], .little);
+        const payload = decrypted[bmt.SPAN_SIZE..];
+
+        var hdr_buf: [256]u8 = undefined;
+        const hdr = try std.fmt.bufPrint(
+            &hdr_buf,
+            "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Length: {d}\r\nX-Chunk-Span: {d}\r\n\r\n",
+            .{ payload.len, decrypted_span },
+        );
+        try stream.writeAll(hdr);
+        try stream.writeAll(payload);
+        return;
+    }
 
     var hdr_buf: [256]u8 = undefined;
     const hdr = try std.fmt.bufPrint(
@@ -1186,19 +1287,27 @@ fn joinerFetchAdapter(
 fn handleBzzApi(
     node: *P2PNode,
     stream: net.Stream,
-    addr: [bmt.HASH_SIZE]u8,
+    ref: Ref,
     /// Optional manifest path. Empty string ⇒ resolve the manifest's
     /// default file (bee's `website-index-document` flow). Non-empty ⇒
     /// look the path up in the trie and serve that entry.
     inner_path: []const u8,
 ) !void {
     std.debug.print(
-        "[api] /bzz {s}{s}{s}\n",
-        .{ std.fmt.bytesToHex(addr, .lower), if (inner_path.len > 0) "/" else "", inner_path },
+        "[api] /bzz {s}{s}{s}{s}\n",
+        .{
+            std.fmt.bytesToHex(ref.addr, .lower),
+            if (ref.key != null) "...(encrypted)" else "",
+            if (inner_path.len > 0) "/" else "",
+            inner_path,
+        },
     );
 
-    // Step 1: fetch the root chunk via origin-retry iteration.
-    var rc = node.retrieveChunkIterating(addr) catch |e| {
+    // Step 1: fetch the root chunk via origin-retry iteration. For
+    // encrypted refs, decrypt before looking at the manifest signature
+    // (the on-wire bytes are ciphertext; mantaray.looksLikeManifest
+    // expects the plaintext header).
+    var rc = node.retrieveChunkIterating(ref.addr) catch |e| {
         try writeHttpFmt(
             stream,
             if (e == error.NoConnectedPeers) @as(u16, 503) else @as(u16, 502),
@@ -1210,13 +1319,34 @@ fn handleBzzApi(
     };
     defer rc.deinit();
 
+    // Decrypted root view. For unencrypted refs this is the raw
+    // payload (rc.data); for encrypted refs, this is the decrypted
+    // plaintext payload (after `decryptChunk` strips the 8-byte span
+    // prefix and trims to real-span).
+    var root_payload: []const u8 = rc.data;
+    var owned_decrypted_root: ?[]u8 = null;
+    defer if (owned_decrypted_root) |d| node.allocator.free(d);
+    if (ref.key) |k| {
+        const wire = try node.allocator.alloc(u8, bmt.SPAN_SIZE + rc.data.len);
+        defer node.allocator.free(wire);
+        std.mem.writeInt(u64, wire[0..bmt.SPAN_SIZE], rc.span, .little);
+        @memcpy(wire[bmt.SPAN_SIZE..], rc.data);
+        owned_decrypted_root = encryption.decryptChunk(node.allocator, k, wire) catch |e| {
+            try writeHttpFmt(stream, 502, "text/plain", "decrypt root failed: {any}\n", .{e});
+            return;
+        };
+        // For mantaray detection, skip the 8-byte span prefix.
+        root_payload = owned_decrypted_root.?[bmt.SPAN_SIZE..];
+    }
+
     // Step 2: is the root a mantaray manifest?
     //   - Yes + no inner path: resolve default file via root metadata.
     //   - Yes + inner path: walk that path in the trie.
-    //   - No: serve the chunk-tree at addr directly (only valid with
-    //     empty inner path; with a path we'd have nothing to look up in).
-    const file_addr = if (mantaray.looksLikeManifest(rc.data)) blk: {
-        var manifest_root = mantaray.parse(node.allocator, rc.data) catch |e| {
+    //   - No: serve the chunk-tree at the root ref directly (only valid
+    //     with empty inner path; with a path we'd have nothing to look
+    //     up in).
+    const file_ref: Ref = if (mantaray.looksLikeManifest(root_payload)) blk: {
+        var manifest_root = mantaray.parse(node.allocator, root_payload) catch |e| {
             try writeHttpFmt(stream, 502, "text/plain", "bad manifest: {any}\n", .{e});
             return;
         };
@@ -1245,31 +1375,48 @@ fn handleBzzApi(
                 return;
             };
         defer node.allocator.free(entry_ref);
-        if (entry_ref.len != bmt.HASH_SIZE) {
-            try writeHttpFmt(stream, 502, "text/plain", "unexpected ref size: {d}\n", .{entry_ref.len});
-            return;
-        }
-        var fa: [bmt.HASH_SIZE]u8 = undefined;
-        @memcpy(&fa, entry_ref);
+
+        // Manifests built with encryption store 64-byte entry refs
+        // (32-byte chunk addr ‖ 32-byte file-tree key); plain manifests
+        // store 32-byte refs.
+        const fr = switch (entry_ref.len) {
+            bmt.HASH_SIZE => Ref{ .addr = blk2: {
+                var a: [bmt.HASH_SIZE]u8 = undefined;
+                @memcpy(&a, entry_ref);
+                break :blk2 a;
+            } },
+            encryption.REFERENCE_SIZE => fr_blk: {
+                var a: [bmt.HASH_SIZE]u8 = undefined;
+                var k: [encryption.KEY_LEN]u8 = undefined;
+                @memcpy(&a, entry_ref[0..bmt.HASH_SIZE]);
+                @memcpy(&k, entry_ref[bmt.HASH_SIZE..]);
+                break :fr_blk Ref{ .addr = a, .key = k };
+            },
+            else => {
+                try writeHttpFmt(stream, 502, "text/plain", "unexpected ref size: {d}\n", .{entry_ref.len});
+                return;
+            },
+        };
         std.debug.print(
-            "[api] /bzz: manifest{s}{s} resolved to {s}\n",
+            "[api] /bzz: manifest{s}{s} resolved to {s}{s}\n",
             .{
                 if (inner_path.len > 0) " path=" else " (default doc)",
                 inner_path,
-                std.fmt.bytesToHex(fa, .lower),
+                std.fmt.bytesToHex(fr.addr, .lower),
+                if (fr.key != null) " (encrypted)" else "",
             },
         );
-        break :blk fa;
+        break :blk fr;
     } else blk: {
         if (inner_path.len > 0) {
             try writeHttp(stream, 404, "text/plain", "reference is not a manifest; cannot resolve path\n");
             return;
         }
-        break :blk addr;
+        break :blk ref;
     };
 
-    // Step 3: walk the chunk-tree at `file_addr` and stream the bytes.
-    const file_bytes = joiner.join(node.allocator, @ptrCast(node), &joinerFetchAdapter, file_addr) catch |e| {
+    // Step 3: walk the chunk-tree at `file_ref` and stream the bytes.
+    const file_bytes = joinByRef(node, file_ref) catch |e| {
         try writeHttpFmt(
             stream,
             if (e == error.NoConnectedPeers) @as(u16, 503) else @as(u16, 502),
@@ -1289,6 +1436,16 @@ fn handleBzzApi(
     );
     try stream.writeAll(hdr);
     try stream.writeAll(file_bytes);
+}
+
+/// Joiner-by-ref: dispatches to `joiner.join` (32-byte ref) or
+/// `joiner.joinEncrypted` (64-byte ref) depending on whether the Ref
+/// carries a symmetric key.
+fn joinByRef(node: *P2PNode, ref: Ref) ![]u8 {
+    if (ref.key) |k| {
+        return joiner.joinEncrypted(node.allocator, @ptrCast(node), &joinerFetchAdapter, ref.addr, k);
+    }
+    return joiner.join(node.allocator, @ptrCast(node), &joinerFetchAdapter, ref.addr);
 }
 
 // ---- bee-compatible identity / health ----
@@ -1443,9 +1600,9 @@ fn handleChunkBee(
 fn handleBytes(
     node: *P2PNode,
     stream: net.Stream,
-    addr: [bmt.HASH_SIZE]u8,
+    ref: Ref,
 ) !void {
-    const file_bytes = joiner.join(node.allocator, @ptrCast(node), &joinerFetchAdapter, addr) catch |e| {
+    const file_bytes = joinByRef(node, ref) catch |e| {
         const code: u16 = if (e == error.NoConnectedPeers) 503 else 502;
         try writeHttpFmt(stream, code, "text/plain", "bytes retrieval failed: {any}\n", .{e});
         return;
@@ -1488,20 +1645,44 @@ fn writeHex(body: *std.ArrayList(u8), allocator: std.mem.Allocator, bytes: []con
 }
 
 /// Loader adapter for the mantaray walker. Given a child reference, fetch
-/// the chunk and parse it as a mantaray Node. Used when the manifest spans
-/// multiple chunks.
+/// the chunk and parse it as a mantaray Node. For 64-byte refs (encrypted
+/// manifests, 0.5b), the second half is the symmetric key; we decrypt the
+/// retrieved chunk before parsing it as the next manifest node.
 fn mantarayLoaderAdapter(
     ctx_opaque: *anyopaque,
     ref: []const u8,
     out: *mantaray.Node,
 ) anyerror!void {
     const node: *P2PNode = @ptrCast(@alignCast(ctx_opaque));
-    if (ref.len != bmt.HASH_SIZE) return error.UnsupportedRefSize;
+
     var addr: [bmt.HASH_SIZE]u8 = undefined;
-    @memcpy(&addr, ref);
+    var key: ?[encryption.KEY_LEN]u8 = null;
+    switch (ref.len) {
+        bmt.HASH_SIZE => @memcpy(&addr, ref),
+        encryption.REFERENCE_SIZE => {
+            @memcpy(&addr, ref[0..bmt.HASH_SIZE]);
+            var k: [encryption.KEY_LEN]u8 = undefined;
+            @memcpy(&k, ref[bmt.HASH_SIZE..]);
+            key = k;
+        },
+        else => return error.UnsupportedRefSize,
+    }
+
     var rc = try node.retrieveChunkIterating(addr);
     defer rc.deinit();
-    out.* = try mantaray.parse(node.allocator, rc.data);
+
+    if (key) |k| {
+        const wire = try node.allocator.alloc(u8, bmt.SPAN_SIZE + rc.data.len);
+        defer node.allocator.free(wire);
+        std.mem.writeInt(u64, wire[0..bmt.SPAN_SIZE], rc.span, .little);
+        @memcpy(wire[bmt.SPAN_SIZE..], rc.data);
+
+        const decrypted = try encryption.decryptChunk(node.allocator, k, wire);
+        defer node.allocator.free(decrypted);
+        out.* = try mantaray.parse(node.allocator, decrypted[bmt.SPAN_SIZE..]);
+    } else {
+        out.* = try mantaray.parse(node.allocator, rc.data);
+    }
 }
 
 fn writeHttp(stream: net.Stream, status: u16, content_type: []const u8, body: []const u8) !void {

@@ -181,11 +181,15 @@ acknowledged but deferred.
   are the headline of 0.5.0.
 - **No push.** Cannot upload chunks (`/swarm/pushsync/1.3.1`). Requires
   postage stamps + chain integration. Planned in 0.6.0.
-- **No encrypted-chunk references** (`refLength = 64`; second 32 bytes
-  are the decryption key). Planned in 0.5.0.
-- **No local chunk store.** We never cache; every retrieval re-fetches
-  from a connected peer. Planned in 0.5.0 (basic LRU on
-  `~/.zigbee/store/`).
+- ~~**No encrypted-chunk references**~~ — landed in 0.5b on `main`
+  (not yet tagged). 128-char hex refs (32-byte addr ‖ 32-byte
+  symmetric key) traverse the encrypted chunk-tree (branching=64)
+  with per-ref keccak256-CTR decryption; works for both
+  `/bytes/<128-hex>` and `/bzz/<128-hex>/...`.
+- ~~**No local chunk store.**~~ — landed in 0.5a on `main` (not yet
+  tagged). Flat-file LRU at `~/.zigbee/store/`, default 100 MiB,
+  configurable via `--store-path` / `--store-max-bytes` /
+  `--no-store`.
 
 ## Build
 
@@ -195,7 +199,7 @@ and link `libsecp256k1`).
 ```bash
 cd zigbee
 zig build           # development default: Debug
-zig build test      # 62/62
+zig build test      # 87/87
 ```
 
 ### Release modes

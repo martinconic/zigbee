@@ -18,8 +18,15 @@
 //   [ obfuscation_key       (32) ]   — random per node; XORs the rest
 //   [ version_hash          (31) ]   — first 31B of keccak("mantaray:0.2")
 //   [ ref_bytes_size         (1) ]   — typically 32; can be 64 for
-//                                        encrypted refs (we don't yet
-//                                        support ref_bytes_size = 64)
+//                                        encrypted refs (the parser is
+//                                        ref-size agnostic — it reads
+//                                        `ref_size` bytes per fork.ref
+//                                        and per node.entry. Loader-side
+//                                        decryption of child manifest
+//                                        chunks is handled in the
+//                                        caller's `loader` callback;
+//                                        see p2p.zig:mantarayLoaderAdapter
+//                                        for the 0.5b implementation).
 //   [ entry            (refSize) ]   — the node's own entry reference;
 //                                        zero-filled if the node is not
 //                                        a value type

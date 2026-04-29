@@ -5,6 +5,7 @@ const identity = @import("identity.zig");
 const p2p = @import("p2p.zig");
 const dnsaddr = @import("dnsaddr.zig");
 const store_mod = @import("store.zig");
+const encryption = @import("encryption.zig");
 
 /// Default local-store cap. 100 MiB ≈ 25 000 chunks at 4 KiB each;
 /// fits a Pi Zero comfortably and is tunable down for ESP32-class
@@ -24,12 +25,18 @@ const DEFAULT_STORE_MAX_BYTES: u64 = 100 * 1024 * 1024;
 //     (none)                 dial the peer, complete handshake, stay in
 //                            accept loop
 //     resolve <hostname>     /dnsaddr lookup, then exit
-//     retrieve <hex> [-o f]  retrieve one chunk by content address, then exit
+//     retrieve <hex> [-o f]  retrieve one chunk by content address, then exit.
+//                            <hex> is 64 chars (unencrypted CAC) or 128 chars
+//                            (encrypted: 32-byte addr ‖ 32-byte symmetric key,
+//                            as produced by bee uploads with
+//                            `Swarm-Encrypt: true`). For encrypted refs the
+//                            chunk is decrypted before being written/printed.
 //
 // Examples:
 //   zigbee
 //   zigbee --peer 167.235.96.31:32491 retrieve <hex-addr> -o chunk.bin
 //   zigbee --network-id 1 --peer 1.2.3.4:1634 retrieve <hex-addr>
+//   zigbee --peer 1.2.3.4:1634 retrieve <128-hex-encrypted-ref> -o file.bin
 //   zigbee resolve sepolia.testnet.ethswarm.org
 
 const Args = struct {
@@ -38,7 +45,9 @@ const Args = struct {
     network_id: u64 = 10,
     subcommand: enum { none, resolve, retrieve, daemon } = .none,
     /// For `resolve`: the hostname.
-    /// For `retrieve`: the 64-char hex chunk address.
+    /// For `retrieve`: the chunk reference, hex-encoded — either 64 chars
+    /// (unencrypted CAC: 32-byte address) or 128 chars (encrypted: 32-byte
+    /// address ‖ 32-byte symmetric key).
     positional: []const u8 = "",
     out_path: ?[]const u8 = null,
     api_port: u16 = 9090,
@@ -161,18 +170,25 @@ fn printHelp() void {
         \\  (none)              dial the peer, do the handshake, stay connected
         \\  resolve <host>      /dnsaddr lookup, then exit
         \\  retrieve <hex> [-o file]
-        \\                      retrieve one chunk by content address, then exit
+        \\                      retrieve one chunk by content address, then exit.
+        \\                      <hex> is 64 chars (unencrypted) or 128 chars
+        \\                      (encrypted ref = 32-byte addr ‖ 32-byte key,
+        \\                      as bee returns when Swarm-Encrypt: true).
         \\  daemon [--max-peers N] [--api-port P]
         \\                      dial --peer as a bootnode, auto-connect to up to
         \\                      N peers via hive (default 4), and serve a small
         \\                      HTTP API on 127.0.0.1:P (default 9090):
         \\                        GET /retrieve/<hex>   — retrieve a chunk
+        \\                                                (64-hex or 128-hex)
+        \\                        GET /bytes/<hex>      — chunk-tree → raw bytes
+        \\                        GET /bzz/<hex>/<path> — manifest lookup
         \\                        GET /peers            — connected-peer JSON
         \\
         \\examples:
         \\  zigbee --peer 167.235.96.31:32491 --network-id 10 retrieve <hex> -o out.bin
         \\  zigbee --peer 167.235.96.31:32491 --network-id 10 daemon --max-peers 6
         \\  curl -o file.bin http://127.0.0.1:9090/retrieve/<hex>
+        \\  curl -o file.bin http://127.0.0.1:9090/bytes/<128-hex-encrypted-ref>
         \\  zigbee resolve sepolia.testnet.ethswarm.org
         \\
     , .{});
@@ -255,13 +271,29 @@ pub fn main() !void {
 
     var action: p2p.PostHandshakeAction = .none;
     if (args.subcommand == .retrieve) {
-        if (args.positional.len != 64) {
-            std.debug.print("retrieve: expected 64-char hex address, got {d} chars\n", .{args.positional.len});
+        // Accept either 64 chars (unencrypted CAC: 32-byte address) or
+        // 128 chars (encrypted: 32-byte address ‖ 32-byte symmetric key,
+        // produced by bee uploads with `Swarm-Encrypt: true`).
+        if (args.positional.len != 64 and args.positional.len != 128) {
+            std.debug.print(
+                "retrieve: expected 64-char (unencrypted) or 128-char (encrypted) hex reference, got {d} chars\n",
+                .{args.positional.len},
+            );
             return error.InvalidArgument;
         }
         var addr_bytes: [32]u8 = undefined;
-        _ = try std.fmt.hexToBytes(&addr_bytes, args.positional);
-        action = .{ .retrieve = .{ .address = addr_bytes, .out_path = args.out_path } };
+        _ = try std.fmt.hexToBytes(&addr_bytes, args.positional[0..64]);
+        var key_opt: ?[encryption.KEY_LEN]u8 = null;
+        if (args.positional.len == 128) {
+            var key_bytes: [encryption.KEY_LEN]u8 = undefined;
+            _ = try std.fmt.hexToBytes(&key_bytes, args.positional[64..128]);
+            key_opt = key_bytes;
+        }
+        action = .{ .retrieve = .{
+            .address = addr_bytes,
+            .key = key_opt,
+            .out_path = args.out_path,
+        } };
     }
 
     var node = try p2p.P2PNode.init(allocator, id, args.network_id, nonce, store_ptr);
@@ -375,4 +407,5 @@ test {
     _ = @import("proto.zig");
     _ = @import("yamux.zig");
     _ = @import("store.zig");
+    _ = @import("encryption.zig");
 }

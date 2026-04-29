@@ -8,7 +8,7 @@ notes as each one ships, and 0.5.0 is tagged when all three are done.
 | Sub-item | State |
 |---|---|
 | 0.5a — local flat-file chunk store with basic LRU | ✅ landed |
-| 0.5b — encrypted-chunk references (`refLength = 64`) | not started |
+| 0.5b — encrypted-chunk references (`refLength = 64`) | ✅ landed |
 | 0.5c — SWAP cheques (issue-only, no on-chain cashing) | not started |
 
 ---
@@ -160,9 +160,154 @@ Requires Zig 0.15.x and a C toolchain.
 
 ## 0.5b — encrypted-chunk references (`refLength = 64`)
 
-*Not started.* Refs carry 32 B addr ‖ 32 B sym key. Joiner +
-mantaray walker need to honour 64-byte refs and decrypt payloads
-with the per-ref symmetric key. ~2 weeks FTE.
+**Why it matters:** bee uploads with `Swarm-Encrypt: true` produce
+a 128-char hex reference (32-byte address ‖ 32-byte symmetric key).
+Each chunk in the tree is encrypted with a key derived from its
+parent reference, and the tree's branching factor changes from 128
+(unencrypted) to 64 (each child slot now holds addr+key, not just
+addr). Without 0.5b a zigbee daemon couldn't read anything pinned
+encrypted — i.e. anything where the publisher cared about
+confidentiality on the wire / on the storers' disks. With 0.5b in,
+the daemon transparently retrieves both forms.
+
+### What's new
+
+```bash
+# Upload encrypted via bee (returns 128-char ref).
+$ REF=$(curl -sS -X POST -H "Swarm-Postage-Batch-Id: $BATCH" \
+        -H "Swarm-Encrypt: true" \
+        --data-binary @file.bin http://127.0.0.1:1633/bytes \
+        | jq -r .reference)
+$ echo $REF | wc -c
+129    # 128 hex + newline
+
+# Retrieve transparently — zigbee detects 128-char refs and decrypts.
+$ time curl -so out.bin http://127.0.0.1:9090/bytes/$REF
+real    0m0.105s
+$ cmp file.bin out.bin && echo OK
+OK
+
+# CLI form works too — single-chunk leaves only.
+$ zigbee --peer 127.0.0.1:1634 retrieve $REF -o out.bin
+[retrieve] requesting chunk da63...4876 (encrypted) via peer 7179...6c9a
+[retrieve] got 4096 bytes (span=10027656661073034444)
+[retrieve] wrote 2048 bytes to out.bin
+```
+
+### New module — `src/encryption.zig` (~330 lines incl. tests)
+
+Bee's chunk cipher is keccak256-CTR, segment-keyed:
+
+```
+seg_key[i] = keccak256(keccak256(key ‖ u32_LE(i + init_ctr)))
+out[i*32 .. (i+1)*32] = in[i*32 .. (i+1)*32] XOR seg_key[i]
+```
+
+Two `init_ctr` regimes share one 32-byte key per chunk:
+- **data**: `init_ctr = 0`, covers 4096 B of payload (128 segments)
+- **span**: `init_ctr = 128 (= CHUNK_SIZE / SEGMENT_LEN)`, covers the
+  8-byte length prefix — picked so its keystream never overlaps the data's
+
+| API | Purpose |
+|---|---|
+| `transform(key, buf, init_ctr)` | XOR `buf` in place with the segment-keyed keystream. Involutive, so encrypt = decrypt. |
+| `decryptChunk(allocator, key, encrypted_chunk) ![]u8` | Decrypts a wire-form chunk (`span(8)‖payload`); returns owned `decrypted_span(8) ‖ trimmed-payload`. Trims to the real span on leaves; trims to the encrypted-tree branching count on intermediates. |
+| `encryptedRefCount(span) usize` | Given a decrypted span, return how many 64-byte child refs the intermediate chunk holds (branching factor 64, capacity grows by powers of 64). |
+
+Golden vector: 4 KiB of zeros, key `[1; 32]`, `init_ctr=0` produces
+the exact byte sequence the bee Go reference does (verified
+segment-by-segment in `test "encryption: matches bee golden vector"`).
+
+### Joiner — `src/joiner.zig`
+
+Added `joinEncrypted(allocator, ctx, fetch, root_addr, root_key)`
+alongside the unencrypted `join`. Both share an internal `walk`
+that takes an `is_encrypted: bool`:
+
+- Unencrypted: `ref_len = 32`, parse children as bare addresses.
+- Encrypted: `ref_len = 64`, split each ref into 32 B addr + 32 B
+  key, fetch the child, **decrypt with that key**, recurse.
+
+The decrypt happens on every chunk in the tree — root, intermediates,
+leaves — using the key that came in *with the ref pointing at it*.
+This is bee's design for forward-secrecy: knowing one subtree's key
+gives you that subtree but never its sibling.
+
+### Mantaray — `src/mantaray.zig`
+
+The on-the-wire mantaray format already encodes its own
+`refBytesSize` byte (32 vs 64), so the parser was ref-size agnostic
+out of the box. The change in 0.5b is one comment update plus the
+loader contract: when the manifest itself is reached via an
+encrypted ref, the loader callback gets the *decrypted* chunk
+bytes, and a fork ref of length 64 means the *child* chunk is also
+encrypted. zigbee's `mantarayLoaderAdapter` (in `src/p2p.zig`)
+peels off the 32-byte key suffix when present and decrypts before
+parsing the child.
+
+### HTTP routing — `src/p2p.zig`
+
+```zig
+pub const Ref = struct {
+    addr: [bmt.HASH_SIZE]u8,
+    key: ?[encryption.KEY_LEN]u8 = null,
+};
+```
+
+`/bytes/<hex>`, `/bzz/<hex>/...`, `/retrieve/<hex>` all parse 64-
+or 128-char hex into a `Ref`. `joinByRef` dispatches to `join` or
+`joinEncrypted`. `handleBzzApi` decrypts the root chunk before
+checking `mantaray.looksLikeManifest`, so a 128-char ref pointing
+at an encrypted manifest works transparently.
+
+### CLI
+
+`retrieve` accepts either 64 chars (unencrypted CAC) or 128 chars
+(encrypted ref); `runRetrievalAgainst` decrypts the leaf when the
+key is present. Help text updated.
+
+### Tests
+
+5 new unit tests in `src/encryption.zig` + 2 in `src/joiner.zig`:
+
+- `encryption: transform matches bee golden vector (4 KiB zeros)`
+- `encryption: transform is involutive (encrypt then decrypt)`
+- `encryption: data init_ctr=0 and span init_ctr=128 keystreams disjoint`
+- `encryption: decryptChunk leaf round-trip`
+- `encryption: encryptedRefCount across span ranges`
+- `joiner: encrypted single-leaf round-trip`
+- `joiner: encrypted two-leaf intermediate round-trip`
+
+Total suite: **87 / 87** unit tests pass.
+
+### Live verification
+
+`/home/calin/work/swarm/bee-clients/scripts/04-upload-encrypted-file.sh`
++ `11-verify-zigbee-encrypted-refs.sh` against the Go bee reference
+on Sepolia testnet:
+
+| Path | Cold | Cached | Notes |
+|---|---|---|---|
+| `/bytes/<128-hex>` (single-chunk, 2 KiB) | 105 ms | 11 ms | byte-identical |
+| `/bytes/<128-hex>` (multi-chunk, 16 KiB) | 858 ms | n/a | byte-identical, 1 root + 4 leaves |
+| `/bzz/<128-hex>/` (encrypted manifest, 2 KiB) | 1.12 s | n/a | byte-identical, manifest+leaves all decrypted |
+| CLI `retrieve <128-hex> -o file` | 1× chunk | n/a | byte-identical for single-chunk leaves |
+
+Clean shutdown after SIGINT, zero "broadcast failed" lines on bee
+(0.4.2c regression baseline holds).
+
+### What's intentionally NOT here (deferred)
+
+- **CLI multi-chunk encrypted retrieval.** `retrieve <128-hex>`
+  fetches one chunk; for files >4 KiB you need the daemon's
+  `/bytes/` route which goes through `joinEncrypted`. The CLI
+  is a debug primitive, not a file-download tool.
+- **Encrypted /bytes upload from zigbee.** 0.6 push-side work.
+- **Re-encrypting on cache write.** We cache the *encrypted* leaf
+  chunk on disk (same bytes bee returned), and decrypt on read.
+  This is intentional: storing decrypted plaintext would defeat
+  the upload encryption, and the keccak256-CTR cost on a cache hit
+  is ~8 µs per 32-byte segment — negligible vs. disk I/O.
 
 ## 0.5c — SWAP cheques (issue-only, no on-chain cashing)
 
