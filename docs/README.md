@@ -7,6 +7,7 @@ front page; everything else lives here.
 
 | File | What it is |
 |---|---|
+| [`install.html`](install.html) | **Noob-friendly install + first-run guide** — from a clean machine to your first SWAP-paid retrieval against Sepolia. Pairs with the bundled scripts at [`examples/install-kit/`](../examples/install-kit/). |
 | [`usage.md`](usage.md) | Copy-pasteable command sequences for the common scenarios — daemon-mode against testnet bootnodes, single-shot retrieval, large-file flow, SWAP-paid retrieval. |
 | [`architecture.md`](architecture.md) | Single-page mental model: what zigbee is (ultra-light client), threading model, the accounting wall and how 0.5c's SWAP issuance removes it. |
 | [`plan.md`](plan.md) | Multi-phase roadmap with a phase-status tracking table at the bottom (§9). The source of truth for what's done, in progress, and not started. |

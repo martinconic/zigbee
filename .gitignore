@@ -22,3 +22,7 @@ Thumbs.db
 /file.bin
 /myfile.bin
 /out.bin
+
+# Install-kit user overrides — should never be committed (may contain
+# private RPC URLs, custom paths, etc.).
+/examples/install-kit/config.sh

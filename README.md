@@ -15,6 +15,11 @@ Source: https://github.com/martinconic/zigbee
 
 Requirements: Zig 0.15.x and a C toolchain (for the vendored libsecp256k1).
 
+**New here?** [`docs/install.html`](docs/install.html) is the
+noob-friendly walkthrough from a clean machine to your first
+SWAP-paid retrieval, paired with bundled scripts at
+[`examples/install-kit/`](examples/install-kit/).
+
 ## TL;DR — retrieve a file by its Swarm reference
 
 Four commands. Point zigbee at *any* reachable bee (a public bootnode

@@ -1,0 +1,858 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>zigbee — install &amp; first-run guide (for noobs)</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+  :root {
+    --fg: #1a1a1a;
+    --fg-faint: #555;
+    --bg: #fafafa;
+    --bg-card: #fff;
+    --bg-code: #f1f1f1;
+    --accent: #b35400;
+    --accent-bg: #fff7e6;
+    --warn: #b34000;
+    --warn-bg: #ffeae0;
+    --money: #1f6f3a;
+    --money-bg: #e7f6ec;
+    --rule: #d8d8d8;
+  }
+  * { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
+  body {
+    font: 16px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+          "Helvetica Neue", Arial, sans-serif;
+    color: var(--fg);
+    background: var(--bg);
+    margin: 0;
+    padding: 0;
+  }
+  main {
+    max-width: 880px;
+    margin: 0 auto;
+    padding: 32px 24px 96px;
+  }
+  h1, h2, h3 {
+    line-height: 1.25;
+    color: #111;
+  }
+  h1 { font-size: 30px; margin: 0 0 4px; }
+  .subtitle {
+    color: var(--fg-faint);
+    font-size: 16px;
+    margin: 0 0 24px;
+  }
+  h2 {
+    font-size: 22px;
+    margin: 40px 0 8px;
+    padding-top: 16px;
+    border-top: 2px solid var(--rule);
+  }
+  h2 .step { color: var(--accent); font-weight: 700; }
+  h3 { font-size: 17px; margin: 24px 0 6px; }
+  p, li { margin: 8px 0; }
+  ul, ol { padding-left: 22px; }
+  code, pre, kbd {
+    font-family: "SFMono-Regular", Menlo, Consolas, "Liberation Mono", monospace;
+    font-size: 14px;
+  }
+  code { background: var(--bg-code); padding: 1px 5px; border-radius: 3px; }
+  pre {
+    background: #1e1e1e;
+    color: #f5f5f5;
+    padding: 12px 14px;
+    border-radius: 6px;
+    overflow-x: auto;
+    line-height: 1.45;
+  }
+  pre code { background: transparent; padding: 0; color: inherit; }
+  pre.out {
+    background: #f1f1f1;
+    color: #444;
+    border-left: 3px solid #c0c0c0;
+  }
+  .callout {
+    border-left: 4px solid var(--accent);
+    background: var(--accent-bg);
+    padding: 12px 16px;
+    margin: 14px 0;
+    border-radius: 4px;
+  }
+  .callout strong { color: var(--accent); }
+  .callout.money {
+    border-left-color: var(--money);
+    background: var(--money-bg);
+  }
+  .callout.money strong { color: var(--money); }
+  .callout.warn {
+    border-left-color: var(--warn);
+    background: var(--warn-bg);
+  }
+  .callout.warn strong { color: var(--warn); }
+  .pill {
+    display: inline-block;
+    padding: 1px 8px;
+    border-radius: 11px;
+    font-size: 12px;
+    font-weight: 600;
+    vertical-align: middle;
+  }
+  .pill.money { background: var(--money-bg); color: var(--money); border: 1px solid var(--money); }
+  .pill.time { background: #eef; color: #335; border: 1px solid #aab; }
+  .pill.optional { background: #f4f4f4; color: #666; border: 1px solid #c8c8c8; }
+  table {
+    border-collapse: collapse;
+    width: 100%;
+    font-size: 14px;
+    margin: 12px 0;
+  }
+  th, td {
+    border: 1px solid var(--rule);
+    padding: 6px 10px;
+    text-align: left;
+    vertical-align: top;
+  }
+  th { background: #f0f0f0; }
+  .toc {
+    background: #fff;
+    border: 1px solid var(--rule);
+    border-radius: 6px;
+    padding: 12px 18px;
+    margin: 16px 0 24px;
+    font-size: 14px;
+  }
+  .toc strong { display: block; margin-bottom: 6px; }
+  .toc ol { margin: 0; padding-left: 22px; }
+  .toc li { margin: 2px 0; }
+  a { color: #2050b0; text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  .hint { color: var(--fg-faint); font-size: 14px; margin: 6px 0 12px; }
+  hr { border: none; border-top: 1px solid var(--rule); margin: 32px 0; }
+  footer {
+    color: var(--fg-faint);
+    font-size: 13px;
+    margin-top: 48px;
+    text-align: center;
+  }
+  details {
+    border: 1px solid var(--rule);
+    border-radius: 6px;
+    padding: 10px 14px;
+    margin: 14px 0;
+    background: #fff;
+  }
+  details > summary {
+    cursor: pointer;
+    font-weight: 600;
+    color: var(--accent);
+  }
+  details[open] > summary { margin-bottom: 8px; }
+</style>
+</head>
+<body>
+<main>
+
+<h1>zigbee — install &amp; first-run guide</h1>
+<p class="subtitle">From a clean Linux machine to your first
+SWAP-paid retrieval against a public Sepolia bootnode. No prior
+Swarm experience assumed.</p>
+
+<!-- ========== INTRO ========== -->
+
+<h2>What is this thing, in one paragraph</h2>
+<p>
+  <strong>Swarm</strong> is a peer-to-peer storage network — files are
+  chopped into 4 KB <em>chunks</em>, scattered across thousands of
+  participating nodes, and each chunk is addressed by a hash. The
+  reference node software, written in Go, is called <strong>bee</strong>.
+  <strong>zigbee</strong> is a separate <em>much smaller</em> Swarm
+  client, written in Zig, that joins the network and pulls files out
+  of it. Unlike bee it doesn't store data and doesn't try to be a
+  full node — it's a retrieval-only ultra-light client (~6 MB binary)
+  designed for IoT / embedded / low-resource hosts.
+</p>
+
+<p>
+  In this guide you'll install zigbee, fund a small testnet wallet,
+  deploy a Swarm <em>chequebook</em> contract on the Ethereum Sepolia
+  testnet, and run zigbee against a public Sepolia <em>bootnode</em>
+  so it discovers an optimal peer set and pays them with real
+  EIP-712-signed cheques while retrieving files.
+</p>
+
+<div class="callout">
+  <strong>Bootnode vs. local bee — what's the difference?</strong>
+  This guide uses the <em>bootnode</em> path: zigbee dials a
+  well-known Sepolia bootnode, and via the Swarm hive protocol it
+  receives a list of other peers and dials them too. With
+  <code>--max-peers 20</code> zigbee ends up connected to ~20 real
+  testnet nodes, sorted by XOR-proximity to whatever you're
+  retrieving. That's how you get optimal-peer routing.
+  <br><br>
+  The alternative — running a local bee yourself and pointing
+  zigbee at <code>127.0.0.1:1634</code> — is just the
+  developer-loop setup. Useful for testing uploads (you need bee
+  to upload). Not what you want for actual retrieval. We cover it
+  in <a href="#appendix-local">Appendix A</a> at the end.
+</div>
+
+<div class="toc">
+  <strong>What's covered (the bootnode path)</strong>
+  <ol>
+    <li>Prerequisites — software you need first</li>
+    <li>Get the source code (zigbee + scripts)</li>
+    <li>Build zigbee</li>
+    <li>Generate your zigbee identity (your eth address!)</li>
+    <li><span class="pill money">FUND</span> Get Sepolia ETH (for gas)</li>
+    <li><span class="pill money">FUND</span> Get Sepolia BZZ (for cheques)</li>
+    <li>Deploy your chequebook on Sepolia</li>
+    <li>Find a bootnode IP via <code>zigbee resolve</code></li>
+    <li>Run the zigbee daemon against the bootnode</li>
+    <li>Retrieve a file</li>
+    <li>Stop, glossary, troubleshooting</li>
+    <li><span class="pill optional">APPENDIX A</span> Local-bee mode (for uploads / development)</li>
+  </ol>
+</div>
+
+<div class="callout">
+  <strong>Time:</strong> roughly 30 minutes once you have the testnet
+  funds in hand. Getting the funds is the slow part — budget another
+  10–30 minutes for faucet round-trips.
+  <br><br>
+  <strong>Cost:</strong> testnet only. <em>No real money.</em>
+  Sepolia ETH and Sepolia BZZ are both worthless test tokens — you
+  collect them from public faucets / community channels.
+</div>
+
+<!-- ========== STEP 1 ========== -->
+
+<h2><span class="step">Step 1.</span> Prerequisites</h2>
+<p>You need these installed before anything below will work. Most
+likely you already have several of them.</p>
+
+<table>
+  <thead>
+    <tr><th>Tool</th><th>Why</th><th>Install hint</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><code>git</code></td>
+      <td>Cloning source code.</td>
+      <td>Already on most systems. <code>sudo apt install git</code></td>
+    </tr>
+    <tr>
+      <td><code>zig</code> 0.15.x</td>
+      <td>Compiles zigbee.</td>
+      <td>Download from <a href="https://ziglang.org/download/">ziglang.org/download</a> — extract the tarball, put <code>zig</code> on your <code>PATH</code>. Verify with <code>zig version</code> (should print <code>0.15.x</code>).</td>
+    </tr>
+    <tr>
+      <td><code>cast</code> (foundry)</td>
+      <td>Sends the Sepolia transactions that deploy your chequebook.</td>
+      <td><code>curl -L https://foundry.paradigm.xyz | bash &amp;&amp; foundryup</code> — gives you <code>cast</code>, <code>forge</code>, <code>anvil</code>. We only use <code>cast</code>.</td>
+    </tr>
+    <tr>
+      <td><code>curl</code>, <code>python3</code>, <code>bash</code>, <code>xxd</code></td>
+      <td>Used by the helper script that deploys the chequebook.</td>
+      <td>Standard on every Linux/macOS. <code>xxd</code> ships with vim-common; <code>sudo apt install xxd</code> if missing.</td>
+    </tr>
+  </tbody>
+</table>
+
+<p>Quick check that you have everything:</p>
+<pre><code>git --version
+zig version          # expect 0.15.x
+cast --version       # foundry
+curl --version
+python3 --version
+xxd -v</code></pre>
+
+<p class="hint">
+  <strong>You do NOT need <code>go</code></strong> to follow the
+  bootnode path — Go is only needed to build a local bee binary,
+  which we don't use here. (See Appendix A if you want to.)
+</p>
+
+<!-- ========== STEP 2 ========== -->
+
+<h2><span class="step">Step 2.</span> Get the source code <span class="pill time">~2 min</span></h2>
+
+<p>Pick a working directory. Throughout this guide we use
+<code>~/swarm/</code>, but anywhere is fine — adjust paths as you go.</p>
+
+<pre><code>mkdir -p ~/swarm &amp;&amp; cd ~/swarm
+git clone https://github.com/martinconic/zigbee.git
+cd zigbee</code></pre>
+
+<p>The repo ships with an <strong>install kit</strong> at
+<code>examples/install-kit/</code> — four numbered scripts that
+walk you through the rest of this guide. They auto-detect the
+zigbee binary's location and accept config overrides via a
+<code>config.sh</code> file. We'll use them throughout.</p>
+
+<details>
+<summary>The install kit at a glance</summary>
+<pre><code>examples/install-kit/
+├── README.md                  # script reference
+├── config.example.sh          # template; copy to config.sh
+├── _common.sh                 # sourced by every script
+├── 1-check-funds.sh           # verify Sepolia ETH + sBZZ
+├── 2-deploy-chequebook.sh     # one-time chain step
+├── 3-run-zigbee.sh            # start daemon (foreground)
+└── 4-retrieve.sh              # curl /bytes/&lt;ref&gt; helper</code></pre>
+<p>The kit reads <code>config.sh</code> if present
+(<code>cp config.example.sh config.sh &amp;&amp; $EDITOR config.sh</code>)
+— for things like a private RPC URL, a different
+<code>FUND_AMOUNT_BZZ</code>, or a custom bootnode.
+<code>config.sh</code> is gitignored, so your overrides never get
+committed. Defaults work out-of-the-box on Sepolia testnet, so
+you can skip this step on a first run.</p>
+</details>
+
+<!-- ========== STEP 3 ========== -->
+
+<h2><span class="step">Step 3.</span> Build zigbee <span class="pill time">~30 s</span></h2>
+
+<pre><code>cd ~/swarm/zigbee
+zig build -Doptimize=ReleaseSafe</code></pre>
+
+<p>Output binary is at <code>~/swarm/zigbee/zig-out/bin/zigbee</code>
+(~6 MB). Verify it runs:</p>
+
+<pre><code>./zig-out/bin/zigbee --help</code></pre>
+
+<!-- ========== STEP 4 ========== -->
+
+<h2><span class="step">Step 4.</span> Generate your zigbee identity <span class="pill time">~1 s</span></h2>
+
+<p>Zigbee needs a long-lived secp256k1 keypair — same kind Ethereum
+uses. Running the <code>identity</code> subcommand creates one (or
+prints the existing one if you already have it):</p>
+
+<pre><code>cd ~/swarm/zigbee
+./zig-out/bin/zigbee identity</code></pre>
+
+<p>You'll see something like:</p>
+
+<pre class="out"><code>eth_address=0x&lt;your-20-byte-eth-address&gt;
+overlay=0x&lt;your-32-byte-overlay&gt;
+network_id=10</code></pre>
+
+<p>What this means:</p>
+<ul>
+  <li><code>eth_address</code> — <strong>this is the address you'll
+      fund</strong> in the next two steps. It's a regular Ethereum
+      address derived from your zigbee key. Write it down.</li>
+  <li><code>overlay</code> — your peer ID in the Swarm network
+      (derived from <code>eth_address</code> + a per-network nonce).
+      You don't need to copy it; it'll show up in logs.</li>
+  <li><code>network_id=10</code> — the Sepolia testnet network ID.</li>
+</ul>
+
+<p>The key is saved at <code>~/.zigbee/identity.key</code> — a 64-byte
+file (32-byte private key ‖ 32-byte bzz nonce). Back it up; if you
+lose it you lose access to your chequebook.</p>
+
+<div class="callout warn">
+  <strong>Treat <code>~/.zigbee/identity.key</code> like a wallet
+  private key</strong> — because it is one. Anyone with this file
+  can spend any sBZZ in your chequebook. We're on testnet so
+  nothing is real money, but build the habit now.
+</div>
+
+<!-- ========== STEP 5 ========== -->
+
+<h2><span class="step">Step 5.</span> <span class="pill money">FUND</span> Get Sepolia ETH for gas <span class="pill time">~5–10 min</span></h2>
+
+<p>Deploying your chequebook is a real on-chain transaction on the
+Sepolia Ethereum testnet, and on-chain transactions cost gas. Gas is
+paid in (testnet) ETH. You need about <strong>0.005 ETH on Sepolia</strong>
+— call it 0.01 to be safe.</p>
+
+<p>Pick any Sepolia faucet. Common choices:</p>
+
+<ul>
+  <li><a href="https://www.alchemy.com/faucets/ethereum-sepolia">alchemy.com/faucets/ethereum-sepolia</a> — drips 0.05 ETH/day with a free Alchemy account.</li>
+  <li><a href="https://sepolia-faucet.pk910.de">sepolia-faucet.pk910.de</a> — proof-of-work captcha, no signup. Slow but reliable.</li>
+  <li><a href="https://www.infura.io/faucet/sepolia">infura.io/faucet/sepolia</a> — needs an Infura account.</li>
+</ul>
+
+<p>Paste your <code>eth_address</code> from step 4. Wait for the
+transaction to confirm (a minute or two), then check both this and
+the next funding step in one go:</p>
+
+<pre><code>cd ~/swarm/zigbee
+./examples/install-kit/1-check-funds.sh</code></pre>
+
+<p>This reads your identity, derives the eth address, queries
+Sepolia for both ETH and sBZZ balances, and prints OK / insufficient
+with faucet links. No transactions sent. If ETH is missing the
+output points you back to the faucets above; if sBZZ is missing,
+see the next step.</p>
+
+<!-- ========== STEP 6 ========== -->
+
+<h2><span class="step">Step 6.</span> <span class="pill money">FUND</span> Get Sepolia (s)BZZ <span class="pill time">~5–15 min</span></h2>
+
+<p>BZZ is Swarm's native ERC-20 token. There's a real BZZ on Ethereum
+mainnet, and a separate <em>testnet</em> BZZ on Sepolia (sometimes
+called sBZZ or gBZZ — same contract, just on Sepolia). You need it
+to fund your chequebook: the chequebook contract holds a sBZZ
+balance, and your cheques draw against that balance.</p>
+
+<p>Aim for at least <strong>1 sBZZ on Sepolia</strong> in your
+<code>eth_address</code> (more if you'll be retrieving lots of data
+— each ~3 chunks costs about 1×10<sup>12</sup> sub-units of payout
+delta, so 1 sBZZ = 10<sup>16</sup> sub-units covers thousands of
+chunks).</p>
+
+<div class="callout">
+  <strong>Where to get sBZZ.</strong> There isn't a single canonical
+  public faucet; the easiest path is to ask in the
+  <a href="https://discord.gg/wdghaQsGq5">Swarm Discord</a> (the
+  <code>#dev</code> channel) — community members and team
+  occasionally drip sBZZ to developers building on testnet. The
+  contract address is
+  <code>0x543dDb01Ba47acB11de34891cD86B675F04840db</code> on Sepolia
+  (16 decimals).
+</div>
+
+<p>Once you've received it, re-run the funds check from step 5:</p>
+
+<pre><code>./examples/install-kit/1-check-funds.sh</code></pre>
+
+<p>Both lines should now print "OK". If sBZZ still shows insufficient,
+the chain hasn't propagated yet — wait a minute and re-run.</p>
+
+<!-- ========== STEP 7 ========== -->
+
+<h2><span class="step">Step 7.</span> Deploy your chequebook on Sepolia <span class="pill time">~30 s</span></h2>
+
+<p>This is the one-time chain step. Run it once per zigbee identity;
+the result lasts forever (or until you switch testnets). Note: it
+talks directly to a public Sepolia RPC — <strong>no local bee needs
+to be running</strong>.</p>
+
+<pre><code>cd ~/swarm/zigbee
+./examples/install-kit/2-deploy-chequebook.sh</code></pre>
+
+<p>What this does, in plain English:</p>
+<ol>
+  <li>Reads your <code>~/.zigbee/identity.key</code> to get the
+      private key and derives the eth address.</li>
+  <li>Calls the canonical Swarm <em>chequebook factory</em> contract
+      on Sepolia
+      (<code>0x0fF044F6bB4F684a5A149B46D7eC03ea659F98A1</code>). The
+      factory deploys a new <em>SimpleSwap</em> contract on your
+      behalf, owned by your eth address. (This is your chequebook.)
+  </li>
+  <li>Reads the freshly-deployed contract address from the
+      transaction receipt.</li>
+  <li>Calls <code>transfer()</code> on the sBZZ token to send 1 sBZZ
+      from your eth address into the chequebook.</li>
+  <li>Writes <code>~/.zigbee/chequebook.json</code> — the credential
+      file zigbee will load on startup.</li>
+</ol>
+
+<p>You'll see the chequebook contract address in the output, like:</p>
+
+<pre class="out"><code>[06-deploy] issuer eth address: 0x&lt;your-eth-address&gt;
+[06-deploy] factory 0x0fF0…98A1 → gBZZ token: 0x543dDb01Ba47acB11de34891cD86B675F04840db (decimals=16)
+[06-deploy] funding amount: 1 BZZ = 10000000000000000 raw units
+[06-deploy] deploy tx: 0x&lt;tx-hash&gt;
+[06-deploy] chequebook deployed at: 0x&lt;your-chequebook-address&gt;
+[06-deploy] funded with 1 BZZ
+[06-deploy] wrote ~/.zigbee/chequebook.json</code></pre>
+
+<p>From now on zigbee can sign cheques drawn against that
+chequebook.</p>
+
+<div class="callout">
+  <strong>Backup: <code>~/.zigbee/chequebook.json</code></strong> —
+  this file plus <code>~/.zigbee/identity.key</code> together let
+  you recover from a wiped disk. Copy them somewhere safe. In
+  production this is the entire payload an operator would flash
+  onto a deployed device alongside firmware.
+</div>
+
+<!-- ========== STEP 8 ========== -->
+
+<h2><span class="step">Step 8.</span> <span class="pill optional">OPTIONAL</span> Inspect the bootnode list</h2>
+
+<p>Bootnodes are well-known public peers run by the Swarm Foundation
+that anyone can dial to enter the network. The Sepolia testnet
+publishes its bootnode list at the DNS name
+<code>sepolia.testnet.ethswarm.org</code> as <code>/dnsaddr</code>
+TXT records.</p>
+
+<p><strong>You don't have to do anything here</strong> — the next step
+launches zigbee with <code>--bootnode /dnsaddr/sepolia.testnet.ethswarm.org</code>
+which does the lookup internally and tries each candidate in turn.
+But if you want to see the list (handy for sanity-checking your
+DNS or picking a specific IP for <code>--peer</code>):</p>
+
+<pre><code>./zig-out/bin/zigbee resolve sepolia.testnet.ethswarm.org</code></pre>
+
+<p>You'll see something like:</p>
+
+<pre class="out"><code>resolved 4 multiaddrs for sepolia.testnet.ethswarm.org:
+  /ip4/167.235.96.31/tcp/32491/p2p/16Uiu2HAm…
+  /ip4/116.202.130.19/tcp/30634/p2p/16Uiu2HAm…
+  /ip4/95.216.91.90/tcp/30634/p2p/16Uiu2HAm…
+  /ip4/142.132.224.135/tcp/30634/p2p/16Uiu2HAm…</code></pre>
+
+<!-- ========== STEP 9 ========== -->
+
+<h2><span class="step">Step 9.</span> Run the zigbee daemon <span class="pill time">~10 s</span></h2>
+
+<p>Now the main event — start zigbee in daemon mode against the
+Sepolia bootnodes, with the chequebook credential loaded:</p>
+
+<pre><code>./examples/install-kit/3-run-zigbee.sh</code></pre>
+
+<p>This wraps:</p>
+
+<pre><code>./zig-out/bin/zigbee \
+    --bootnode /dnsaddr/sepolia.testnet.ethswarm.org \
+    --network-id 10 \
+    --chequebook ~/.zigbee/chequebook.json \
+    daemon \
+    --max-peers 20 \
+    --api-port 9090</code></pre>
+
+<p>What each flag means:</p>
+
+<ul>
+  <li><code>--bootnode /dnsaddr/sepolia.testnet.ethswarm.org</code> —
+      DNS-resolved bootnode list. zigbee internally walks the
+      candidates in order until one handshakes; the rest stay in
+      the table for hive discovery. (You can override with a fixed
+      <code>/ip4/.../tcp/...</code> multiaddr or use
+      <code>--peer ip:port</code> for a known peer instead — the
+      flags are mutually exclusive.)</li>
+  <li><code>--network-id 10</code> — Sepolia testnet network ID.
+      Mismatch and the bootnode's handshake will reject you.</li>
+  <li><code>--chequebook ~/.zigbee/chequebook.json</code> — load the
+      credential. Without this, zigbee tracks debt with each peer
+      but never <em>pays</em>, so retrieval will stop after about
+      25 chunks <em>per peer</em> when the peer disconnects you for
+      hitting its accounting threshold.</li>
+  <li><code>daemon</code> — long-lived process (vs. the one-shot
+      <code>retrieve</code> subcommand).</li>
+  <li><code>--max-peers 20</code> — connect to up to 20 peers via
+      hive discovery. More peers = more options for retrieval, since
+      zigbee asks the peer XOR-closest to each chunk.</li>
+  <li><code>--api-port 9090</code> — zigbee's local HTTP API.</li>
+</ul>
+
+<p>Zigbee should connect to a bootnode, complete the Noise handshake
+and the bee handshake protocol, receive a hive broadcast, and start
+auto-dialing other peers:</p>
+
+<pre class="out"><code>[bootnode] resolved 4 candidate(s) from /dnsaddr/sepolia.testnet.ethswarm.org
+  1. 167.235.96.31:32491
+  2. 116.202.130.19:30634
+  …
+[daemon] dialing bootnode 1/4 167.235.96.31:32491 (network_id=10)
+[connection] noise handshake OK
+[bee-handshake] inbound peer_address=7a3c…
+[daemon] bootnode handshake done: overlay=7a3c… welcome="…"
+[hive] received 41 peer addresses
+[dialer] dialing 95.216.91.90:30634 (overlay=44b1…)
+…
+[host] serving HTTP API on 127.0.0.1:9090</code></pre>
+
+<p>Wait ~10–30 seconds for the auto-dialer to populate the peer set.
+Then verify in another terminal:</p>
+
+<pre><code>curl -s http://127.0.0.1:9090/peers | python3 -m json.tool</code></pre>
+
+<p>You should see ~10–20 connected peers. The more peers, the better
+your chances of finding any given chunk on the first attempt.</p>
+
+<p class="hint">
+  Leave the zigbee terminal running. Open a <strong>second
+  terminal</strong> for the next step.
+</p>
+
+<!-- ========== STEP 10 ========== -->
+
+<h2><span class="step">Step 10.</span> Retrieve a file <span class="pill time">~1–10 s for small files</span></h2>
+
+<p>You need a known testnet reference (a 64-character hex hash). The
+easiest way to get one is to ask in the Swarm Discord — someone has
+almost certainly uploaded a public test file to Sepolia recently.</p>
+
+<p>If you have a reference, fetch it via the kit's retrieve script:</p>
+
+<pre><code>./examples/install-kit/4-retrieve.sh &lt;64-char-hex-ref&gt; /tmp/recovered.bin</code></pre>
+
+<p>The script wraps a timed
+<code>curl http://127.0.0.1:9090/bytes/&lt;ref&gt;</code> and prints
+HTTP status + elapsed milliseconds. Or use curl directly:</p>
+
+<pre><code>REF=&lt;paste-the-64-char-hex-here&gt;
+curl -o /tmp/recovered.bin "http://127.0.0.1:9090/bytes/$REF"</code></pre>
+
+<p>Watch the zigbee log — for each ~3 chunks fetched you'll see a
+<code>[swap] … emitting cheque cumulativePayout=…</code> line. That's
+zigbee paying the peer it's currently retrieving from with an
+EIP-712-signed cheque. Different chunks may go to different peers;
+each peer-relationship has its own cumulative payout state at
+<code>~/.zigbee/chequebook.state.json</code>.</p>
+
+<div class="callout">
+  <strong>No reference handy?</strong> If you can't get a reference
+  through Discord, the easiest workaround is to follow Appendix A
+  to run a local bee, upload your own random file with bee, then
+  retrieve it via zigbee against the bootnode (the chunks need a
+  minute or so for bee's pushsync to replicate them across the
+  testnet, after which any peer can serve them).
+</div>
+
+<!-- ========== STEP 11 ========== -->
+
+<h2><span class="step">Step 11.</span> Stop and persistent state <span class="pill time">~5 s</span></h2>
+
+<p>Send SIGINT to the zigbee daemon (Ctrl-C in its terminal). Zigbee
+catches the signal, closes its connections cleanly, and exits.</p>
+
+<p>Your data persists across restarts:</p>
+<ul>
+  <li><code>~/.zigbee/identity.key</code> — your zigbee identity. Back this up.</li>
+  <li><code>~/.zigbee/chequebook.json</code> — chequebook credential. Back this up.</li>
+  <li><code>~/.zigbee/chequebook.state.json</code> — per-peer
+      cumulative-payout state. <strong>Don't delete this</strong> — it tracks
+      how much zigbee has paid each peer, and bee enforces strict
+      monotonicity. Back it up alongside the credential.</li>
+  <li><code>~/.zigbee/store/</code> — LRU chunk cache (default 100 MiB).
+      Safe to delete if you want a clean cache.</li>
+</ul>
+
+<!-- ========== STEP 12: GLOSSARY ========== -->
+
+<h2><span class="step">Step 12.</span> Glossary &amp; troubleshooting</h2>
+
+<h3>Glossary</h3>
+<table>
+  <tbody>
+    <tr>
+      <td><strong>bee</strong></td>
+      <td>The Go reference Swarm node. Speaks the full protocol, joins the network, stores chunks. ~70 MB binary. Bootnodes are bee instances. You don't need to install it for the bootnode path.</td>
+    </tr>
+    <tr>
+      <td><strong>zigbee</strong></td>
+      <td>The Zig client we're installing. Ultra-light — retrieval-only as of 0.5 (no upload yet). ~6 MB binary; designed for IoT / embedded.</td>
+    </tr>
+    <tr>
+      <td><strong>bootnode</strong></td>
+      <td>A well-known peer with a stable public IP that newcomers can dial to enter the network. Usually run by the project / foundation. Sepolia bootnodes are at <code>sepolia.testnet.ethswarm.org</code>.</td>
+    </tr>
+    <tr>
+      <td><strong>hive</strong></td>
+      <td>Swarm's peer-discovery protocol (<code>/swarm/hive/1.1.0/peers</code>). When zigbee connects to a bootnode, the bootnode broadcasts a list of other peers; zigbee dials them up to <code>--max-peers</code>.</td>
+    </tr>
+    <tr>
+      <td><strong>overlay</strong></td>
+      <td>A peer's Swarm-network identity — a 32-byte hash derived from its eth address + per-network nonce. zigbee uses XOR distance between overlays to pick which peer to ask for a given chunk.</td>
+    </tr>
+    <tr>
+      <td><strong>chunk</strong></td>
+      <td>The unit of storage in Swarm — up to 4 KB of payload, addressed by a hash (CAC) or by signature (SOC).</td>
+    </tr>
+    <tr>
+      <td><strong>reference / ref</strong></td>
+      <td>A chunk address, used as the user-facing handle for a file. 64-char hex for unencrypted, 128-char hex for encrypted (the second 64 chars are the symmetric decryption key).</td>
+    </tr>
+    <tr>
+      <td><strong>chequebook</strong></td>
+      <td>A SimpleSwap smart contract on the chain that holds your sBZZ. zigbee writes EIP-712-signed cheques against it; the receiving peer can later cash those cheques on-chain.</td>
+    </tr>
+    <tr>
+      <td><strong>cheque</strong></td>
+      <td>A signed promise to pay <em>cumulativePayout</em> sBZZ to a specific peer from a specific chequebook. Each new cheque to a given peer must have a strictly higher cumulativePayout than the last (this is what <code>chequebook.state.json</code> tracks per peer).</td>
+    </tr>
+    <tr>
+      <td><strong>SWAP</strong></td>
+      <td>The cheque-exchange protocol Swarm uses for accounting. Stands for "Swarm Accounting Protocol." Runs on libp2p stream ID <code>/swarm/swap/1.0.0</code>.</td>
+    </tr>
+    <tr>
+      <td><strong>postage stamp / batch</strong></td>
+      <td>A sBZZ-priced authorisation to upload data into Swarm. Required for uploads only — you don't need a stamp to retrieve.</td>
+    </tr>
+    <tr>
+      <td><strong>Sepolia</strong></td>
+      <td>An Ethereum testnet — same software as mainnet, worthless test tokens. Swarm's testnet uses Sepolia for chain settlement.</td>
+    </tr>
+    <tr>
+      <td><strong>sBZZ / gBZZ</strong></td>
+      <td>The testnet variant of BZZ (Swarm's native ERC-20). Lives at <code>0x543dDb01Ba47acB11de34891cD86B675F04840db</code> on Sepolia, 16 decimals.</td>
+    </tr>
+  </tbody>
+</table>
+
+<h3>Common problems</h3>
+
+<table>
+  <thead>
+    <tr><th>Symptom</th><th>Likely cause / fix</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><code>2-deploy-chequebook</code> says "insufficient ETH"</td>
+      <td>The faucet hasn't sent yet, or sent to the wrong address. Re-run <code>./examples/install-kit/1-check-funds.sh</code> after a few minutes.</td>
+    </tr>
+    <tr>
+      <td><code>2-deploy-chequebook</code> says "insufficient BZZ"</td>
+      <td>You have ETH but no sBZZ. Lower <code>FUND_AMOUNT_BZZ</code> in <code>config.sh</code> (e.g. <code>0.1</code>) or get more sBZZ.</td>
+    </tr>
+    <tr>
+      <td><code>zigbee resolve</code> returns 0 multiaddrs</td>
+      <td>DNS issue — <code>_dnsaddr.sepolia.testnet.ethswarm.org</code> TXT records aren't reaching you. Try a different network / VPN, or hardcode a known bootnode IP from a teammate.</td>
+    </tr>
+    <tr>
+      <td>zigbee logs <code>noise handshake failed</code></td>
+      <td>The bootnode IP/port is wrong, or the network blocks outbound TCP to that port. Try a different bootnode from the resolve output.</td>
+    </tr>
+    <tr>
+      <td>Zigbee starts but <code>/peers</code> stays empty</td>
+      <td>Hive broadcast hasn't arrived yet (give it 30 s) — or the bootnode you picked is currently unhealthy. Try another from the resolve list.</td>
+    </tr>
+    <tr>
+      <td>Retrieval returns HTTP 502</td>
+      <td>None of your connected peers could find the chunk via forwarding. Either the chunk genuinely isn't on the testnet anymore (cleanup happens), or your peer set isn't well-distributed yet — wait for more peers to populate, or restart with a different bootnode.</td>
+    </tr>
+    <tr>
+      <td>Some peer log says <code>cheque cumulativePayout is not increasing</code></td>
+      <td>Your <code>chequebook.state.json</code> got out of sync — likely you wiped it after sending real cheques to that peer. Recover by querying the peer's <code>/chequebook/cheque</code> for your overlay and seeding the state file with that cumulative; see <code>scripts/12-verify-zigbee-swap.sh</code> for the exact code.</td>
+    </tr>
+    <tr>
+      <td><code>cast: command not found</code></td>
+      <td>Foundry isn't installed or isn't on your PATH. <code>curl -L https://foundry.paradigm.xyz | bash &amp;&amp; foundryup</code> then restart your shell.</td>
+    </tr>
+  </tbody>
+</table>
+
+<!-- ========== APPENDIX A: LOCAL BEE ========== -->
+
+<hr>
+
+<h2 id="appendix-local"><span class="step">Appendix A.</span> <span class="pill optional">OPTIONAL</span> Local-bee mode (for uploads or dev)</h2>
+
+<p>The bootnode path above gets you retrieval. To <em>upload</em>, you
+need a local bee — zigbee 0.5 doesn't speak pushsync yet. Run a
+local bee, upload via its REST API, then either retrieve from your
+own bee (developer loop) or wait for the network to replicate the
+chunks and retrieve from the bootnode-discovered peer set.</p>
+
+<details>
+<summary>Tap to expand: full local-bee instructions</summary>
+
+<h3>A.1 Extra prerequisites</h3>
+<table>
+  <tbody>
+    <tr>
+      <td><code>go</code> 1.21+</td>
+      <td>Compiles bee.</td>
+      <td><code>sudo apt install golang</code> or <a href="https://go.dev/dl/">go.dev/dl</a></td>
+    </tr>
+  </tbody>
+</table>
+
+<h3>A.2 Get bee + the rest of the scripts</h3>
+<pre><code>cd ~/swarm
+git clone https://github.com/ethersphere/bee.git
+# Drop the rest of the helper scripts (00-, 01-, 02-, 03-, 99-, etc.) into ~/swarm/scripts/
+chmod +x scripts/*.sh</code></pre>
+
+<p>Save this as <code>~/swarm/testnet.yaml</code>:</p>
+<pre><code>api-addr: 127.0.0.1:1633
+p2p-addr: :1634
+network-id: 10
+mainnet: false
+verbosity: 5
+data-dir: ~/.bee/testnet
+swap-enable: true
+full-node: false
+bootnode: /dnsaddr/sepolia.testnet.ethswarm.org
+blockchain-rpc-endpoint: https://ethereum-sepolia-rpc.publicnode.com</code></pre>
+
+<div class="callout warn">
+  <strong>Adjust script paths.</strong> The helper scripts have a
+  <code>ROOT=...</code> baked in pointing at the author's working tree.
+  Edit them to point at your <code>~/swarm/</code> tree, or
+  symlink <code>~/swarm</code> at the author's path
+  if you're really lazy.
+</div>
+
+<h3>A.3 Build bee</h3>
+<pre><code>cd ~/swarm/bee
+go build -o ./bee-bin ./cmd/bee/</code></pre>
+
+<h3>A.4 Start bee + buy a stamp + upload a file</h3>
+<pre><code>cd ~/swarm/scripts
+
+./01-start-bee.sh                       # ~1–2 min to /readiness
+eval "$(./02-buy-stamp.sh)"             # → BATCH=…
+eval "$(./03-upload-file.sh)"           # → REF=… TESTFILE=…</code></pre>
+
+<p>Note the <code>REF</code> printed at the end — that's a 64-char
+hex hash you can retrieve via either local bee or zigbee.</p>
+
+<h3>A.5 Retrieve via zigbee</h3>
+<p>For a developer loop, point zigbee at your local bee instead of
+a public bootnode (zigbee will be connected to <em>only</em> bee,
+no other peers — useful for testing the SWAP path under
+controlled conditions):</p>
+<pre><code>./zig-out/bin/zigbee \
+    --peer 127.0.0.1:1634 \
+    --network-id 10 \
+    --chequebook ~/.zigbee/chequebook.json \
+    daemon --max-peers 1 --api-port 9090
+
+# In another terminal:
+curl -o /tmp/recovered.bin "http://127.0.0.1:9090/bytes/$REF"
+cmp "$TESTFILE" /tmp/recovered.bin &amp;&amp; echo "byte-identical ✅"</code></pre>
+
+<p>Or point zigbee at a public bootnode (production-shape) and let
+the network replicate your upload via bee's pushsync. Wait a minute
+or so after upload, then retrieve as in step 10 of the main guide.</p>
+
+<h3>A.6 Verification scripts</h3>
+<p>The scripts/ dir ships with three end-to-end verification scripts
+that exercise the same flow with assertions built in:</p>
+
+<table>
+  <thead>
+    <tr><th>Script</th><th>What it tests</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><code>./10-verify-zigbee-cache.sh "$REF" "$TESTFILE"</code></td>
+      <td>Unencrypted retrieval via zigbee, plus the local LRU cache (cold/hot timing).</td>
+    </tr>
+    <tr>
+      <td><code>./11-verify-zigbee-encrypted-refs.sh "$REF128" "$TESTFILE"</code></td>
+      <td>Encrypted-chunk references (128-character hex). Use <code>./04-upload-encrypted-file.sh</code> to get a <code>$REF128</code>.</td>
+    </tr>
+    <tr>
+      <td><code>./12-verify-zigbee-swap.sh "$REF" "$TESTFILE"</code></td>
+      <td>Full SWAP path — fires 25 retrievals, watches cheques fly, asserts bee accepted them. Requires the chequebook from step 7 of the main guide.</td>
+    </tr>
+  </tbody>
+</table>
+
+<h3>A.7 Stop everything</h3>
+<pre><code>./99-stop-all.sh</code></pre>
+<p>SIGINT zigbee + bee, wait for clean exit, fall through to TERM/KILL on timeout.</p>
+
+</details>
+
+<footer>
+  <p>zigbee install guide · last updated 2026-04-29 · zigbee v0.5.0</p>
+</footer>
+
+</main>
+</body>
+</html>
