@@ -55,7 +55,12 @@ const Entry = struct {
     list_node: std.DoublyLinkedList.Node = .{},
 
     fn fromListNode(n: *std.DoublyLinkedList.Node) *Entry {
-        return @fieldParentPtr("list_node", n);
+        // On 32-bit targets `Entry` (alignment 8 due to its u64 field) is
+        // wider-aligned than `Node` (alignment 4). The Node we receive is
+        // always embedded inside a heap-allocated Entry, so the underlying
+        // memory is in fact 8-aligned — assert that to satisfy
+        // @fieldParentPtr's alignment check on 32-bit ARM.
+        return @alignCast(@fieldParentPtr("list_node", n));
     }
 };
 

@@ -15,5 +15,13 @@ This is the only non-Zig dependency in the project. Everything else
 (ChaCha20-Poly1305, X25519, Keccak-256, SHA-256, ECDSA-P256) is from
 Zig's standard library.
 
+The C sources are compiled directly by `build.zig` (no autotools or
+CMake step) — three files: `src/secp256k1.c`, `src/precomputed_ecmult.c`,
+`src/precomputed_ecmult_gen.c`, plus `-DENABLE_MODULE_RECOVERY=1`. This
+lets `zig build -Dtarget=...` cross-compile libsecp256k1 for any target
+zig supports without external toolchains. The `secp256k1/build/` tree
+that may be left over from earlier autotools-based setups is no longer
+used and can be deleted.
+
 To pull a newer upstream, replace the directory and update the commit
 hash above. The `.git` is intentionally stripped before vendoring.
