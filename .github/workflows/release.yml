@@ -1,0 +1,110 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing tag to build (e.g. v0.5.1)'
+        required: true
+        type: string
+
+jobs:
+  test:
+    name: Test (native)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.15.2
+      - name: Run unit tests
+        run: zig build test --summary all
+
+  build:
+    name: Build ${{ matrix.target }}
+    needs: test
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-linux-musl
+            artifact: zigbee-linux-amd64-musl
+          - target: aarch64-linux-musl
+            artifact: zigbee-linux-arm64-musl
+          - target: aarch64-linux-gnu
+            artifact: zigbee-linux-arm64
+          - target: arm-linux-musleabihf
+            artifact: zigbee-linux-armv7-musl
+          - target: x86_64-macos
+            artifact: zigbee-darwin-amd64
+          - target: aarch64-macos
+            artifact: zigbee-darwin-arm64
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.15.2
+      - name: Build
+        run: zig build -Dtarget=${{ matrix.target }} -Doptimize=ReleaseSafe
+      - name: Stage artifact
+        run: |
+          mkdir -p dist
+          cp zig-out/bin/zigbee dist/${{ matrix.artifact }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: dist/${{ matrix.artifact }}
+          if-no-files-found: error
+
+  release:
+    name: Publish GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+      - name: Determine tag and version
+        id: meta
+        run: |
+          TAG="${{ inputs.tag || github.ref_name }}"
+          VERSION="${TAG#v}"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+      - name: Locate release notes
+        id: notes
+        run: |
+          NOTES="docs/release-notes/${{ steps.meta.outputs.version }}.md"
+          if [ ! -f "$NOTES" ]; then
+            echo "::error::Release notes not found at $NOTES"
+            exit 1
+          fi
+          echo "path=$NOTES" >> "$GITHUB_OUTPUT"
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Compute checksums
+        working-directory: dist
+        run: |
+          sha256sum zigbee-* > SHA256SUMS
+          cat SHA256SUMS
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.meta.outputs.tag }}
+          name: zigbee ${{ steps.meta.outputs.version }}
+          body_path: ${{ steps.notes.outputs.path }}
+          files: |
+            dist/zigbee-*
+            dist/SHA256SUMS
+          fail_on_unmatched_files: true
