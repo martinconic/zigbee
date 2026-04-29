@@ -31,6 +31,29 @@ const SUPPORTED_PROTOCOLS = [_][]const u8{
     "/yamux/1.0.0",
 };
 
+/// Daemon-mode shutdown flag. Set from a SIGINT/SIGTERM handler (signal
+/// handlers can only do async-signal-safe work, so the handler does
+/// nothing but flip this atomic). The serveApi loop polls it; the hive
+/// dialer checks it at every iteration; daemonRun joins both threads
+/// before returning so `defer node.deinit()` in main can close all live
+/// connections cleanly (FIN), avoiding the "broadcast failed" log line
+/// bee emits when our process-exit RST drops the TCP session abruptly.
+var g_shutdown: std.atomic.Value(bool) = std.atomic.Value(bool).init(false);
+
+fn handleShutdownSignal(_: c_int) callconv(.c) void {
+    g_shutdown.store(true, .release);
+}
+
+fn installSignalHandlers() !void {
+    var sa = std.posix.Sigaction{
+        .handler = .{ .handler = handleShutdownSignal },
+        .mask = std.posix.sigemptyset(),
+        .flags = 0,
+    };
+    std.posix.sigaction(std.posix.SIG.INT, &sa, null);
+    std.posix.sigaction(std.posix.SIG.TERM, &sa, null);
+}
+
 /// Optional task to perform after a one-shot dial completes the bee
 /// handshake. Set by main.zig from CLI args.
 pub const PostHandshakeAction = union(enum) {
@@ -358,7 +381,10 @@ pub const P2PNode = struct {
 
     /// Daemon: dial bootnode → as hive entries arrive, dial up to
     /// max_peers from them → serve an HTTP API for retrieval.
+    /// Returns cleanly on SIGINT/SIGTERM after joining the dialer worker.
     pub fn daemonRun(self: *P2PNode, opts: DaemonOpts) !void {
+        try installSignalHandlers();
+
         const ip4 = parseIpv4(opts.bootnode_ip) orelse return error.InvalidIp;
         std.debug.print("[daemon] dialing bootnode {s}:{d} (network_id={d})\n", .{ opts.bootnode_ip, opts.bootnode_port, self.network_id });
         const boot_conn = try Connection.dial(
@@ -376,14 +402,26 @@ pub const P2PNode = struct {
         try self.registerConnection(boot_conn);
 
         // Worker that drains the hive-candidate queue and tries to dial
-        // each candidate up to `max_peers`.
+        // each candidate up to `max_peers`. Joinable (not detached) so
+        // graceful shutdown can wait for it to finish its current iteration.
         const dialer_ctx = try self.allocator.create(DialerCtx);
+        defer self.allocator.destroy(dialer_ctx);
         dialer_ctx.* = .{ .node = self, .max_peers = opts.max_peers };
         const dialer_thread = try std.Thread.spawn(.{}, runHiveDialer, .{dialer_ctx});
-        dialer_thread.detach();
 
-        // HTTP API.
-        try serveApi(self, opts.api_port);
+        // HTTP API. Polls `g_shutdown` and returns cleanly when the
+        // signal handler raises it.
+        serveApi(self, opts.api_port) catch |e| {
+            std.debug.print("[daemon] serveApi exited: {any}\n", .{e});
+        };
+
+        // Shutdown raised: dialer's next loop iteration will exit (it
+        // checks g_shutdown before sleeping). Join it before returning
+        // so main's `defer node.deinit()` can tear down connections
+        // with no thread still poking at them.
+        std.debug.print("[daemon] shutting down — waiting for dialer to exit\n", .{});
+        dialer_thread.join();
+        std.debug.print("[daemon] dialer joined; closing connections\n", .{});
     }
 };
 
@@ -613,6 +651,8 @@ fn runHiveDialerInner(ctx: *DialerCtx) !void {
     var last_manage_tick: i128 = 0;
 
     while (true) {
+        if (g_shutdown.load(.acquire)) return;
+
         // Manage tick — runs FIRST, before the connectionCount gate,
         // because dead connections inflate the count and would
         // otherwise prevent the prune from ever firing.
@@ -759,7 +799,26 @@ fn serveApi(node: *P2PNode, port: u16) !void {
     defer server.deinit();
     std.debug.print("[api] listening on 127.0.0.1:{d}\n", .{port});
 
-    while (true) {
+    // Poll the listener with a 200 ms timeout so we re-check the shutdown
+    // flag at most ~5x per second. accept() itself stays blocking — poll
+    // gates whether we call it. SIGINT/SIGTERM also interrupts the poll
+    // syscall directly with EINTR; we treat that as "go re-check shutdown".
+    var pfds = [_]std.posix.pollfd{.{
+        .fd = server.stream.handle,
+        .events = std.posix.POLL.IN,
+        .revents = 0,
+    }};
+
+    while (!g_shutdown.load(.acquire)) {
+        // Zig's std.posix.poll wraps EINTR internally; we don't see
+        // SignalInterrupt here. Any other error is logged and we just
+        // re-loop (which re-checks the shutdown flag).
+        const ready = std.posix.poll(&pfds, 200) catch |e| {
+            std.debug.print("[api] poll failed: {any}\n", .{e});
+            continue;
+        };
+        if (ready == 0) continue; // timeout — loop back to shutdown check
+
         const conn = server.accept() catch |e| {
             std.debug.print("[api] accept failed: {any}\n", .{e});
             continue;
@@ -777,6 +836,7 @@ fn serveApi(node: *P2PNode, port: u16) !void {
         };
         t.detach();
     }
+    std.debug.print("[api] shutdown — stopped accepting connections\n", .{});
 }
 
 const ApiCtx = struct {
@@ -805,6 +865,9 @@ const ApiCtx = struct {
 //   GET /bzz/<ref>                  bee-shape — file via joiner, manifest-aware
 //                                   (resolves website-index-document)
 //   GET /bzz/<ref>/<path>           bee-shape — manifest path lookup (mantaray)
+//   POST /pingpong/<peer-overlay>   bee-shape — initiate libp2p Ping against
+//                                   an already-connected peer; returns
+//                                   {"rtt":"<duration>"}
 //
 // Plus zigbee-native legacy aliases:
 //
@@ -827,14 +890,29 @@ fn handleApi(ctx: *ApiCtx) void {
     var it = std.mem.tokenizeScalar(u8, line, ' ');
     const method = it.next() orelse return;
     const path = it.next() orelse return;
-    if (!std.mem.eql(u8, method, "GET")) {
-        writeHttp(ctx.stream, 405, "text/plain", "method not allowed\n") catch {};
+
+    if (std.mem.eql(u8, method, "GET")) {
+        routeGet(ctx.node, ctx.stream, path) catch |e| {
+            std.debug.print("[api] {s} → handler errored: {any}\n", .{ path, e });
+        };
         return;
     }
+    if (std.mem.eql(u8, method, "POST")) {
+        routePost(ctx.node, ctx.stream, path) catch |e| {
+            std.debug.print("[api] POST {s} → handler errored: {any}\n", .{ path, e });
+        };
+        return;
+    }
+    writeHttp(ctx.stream, 405, "text/plain", "method not allowed\n") catch {};
+}
 
-    routeGet(ctx.node, ctx.stream, path) catch |e| {
-        std.debug.print("[api] {s} → handler errored: {any}\n", .{ path, e });
-    };
+fn routePost(node: *P2PNode, stream: net.Stream, path: []const u8) !void {
+    if (std.mem.startsWith(u8, path, "/pingpong/")) {
+        const hex = path[10..];
+        const overlay = parseHexAddress(stream, hex) orelse return;
+        return handlePingpongApi(node, stream, overlay);
+    }
+    try writeHttp(stream, 404, "text/plain", "unknown path\n");
 }
 
 fn routeGet(node: *P2PNode, stream: net.Stream, path: []const u8) !void {
@@ -933,6 +1011,98 @@ fn handleRetrieveApi(
     );
     try stream.writeAll(hdr);
     try stream.writeAll(rc.data);
+}
+
+/// `POST /pingpong/<peer-overlay>` — bee shape (`pkg/api/pingpong.go`).
+/// Looks up an *already-connected* peer by overlay, opens a yamux stream,
+/// runs `/ipfs/ping/1.0.0` once, returns `{"rtt":"<duration>"}` with the
+/// duration string formatted like Go's `time.Duration.String()`.
+/// Returns 404 if the peer is not in our connection list (matches bee's
+/// `p2p.ErrPeerNotFound` → `jsonhttp.NotFound("peer not found")`).
+fn handlePingpongApi(
+    node: *P2PNode,
+    http_stream: net.Stream,
+    overlay: [bzz_address.OVERLAY_LEN]u8,
+) !void {
+    // Find the live connection. Reproduces the same dead-conn filter used
+    // by closestConnectionTo / connectionsSortedByDistance / handlePeersBee.
+    var conn: ?*Connection = null;
+    node.connections_mtx.lock();
+    for (node.connections.items) |c| {
+        if (c.isDead()) continue;
+        if (std.mem.eql(u8, &c.peer_overlay, &overlay)) {
+            conn = c;
+            break;
+        }
+    }
+    node.connections_mtx.unlock();
+
+    if (conn == null) {
+        try writeJson(http_stream, 404,
+            \\{"code":404,"message":"peer not found"}
+        );
+        return;
+    }
+
+    const ystream = conn.?.openStream() catch |e| {
+        try writeHttpFmt(http_stream, 500, "application/json", "{{\"code\":500,\"message\":\"openStream failed: {any}\"}}", .{e});
+        return;
+    };
+    defer ystream.close() catch {};
+
+    const rtt_ns = ping.ping(ystream) catch |e| {
+        try writeHttpFmt(http_stream, 500, "application/json", "{{\"code\":500,\"message\":\"pingpong failed: {any}\"}}", .{e});
+        return;
+    };
+
+    var rtt_buf: [32]u8 = undefined;
+    const rtt_str = formatGoDuration(&rtt_buf, rtt_ns);
+
+    var body_buf: [64]u8 = undefined;
+    const body = try std.fmt.bufPrint(&body_buf, "{{\"rtt\":\"{s}\"}}", .{rtt_str});
+    try writeJson(http_stream, 200, body);
+}
+
+/// Format a duration in nanoseconds the way Go's `time.Duration.String()`
+/// does for the units we'll see from a libp2p ping (≥ 1 ns, almost always
+/// 100µs–500ms in practice). Picks the largest unit such that the integer
+/// part is ≥ 1 and prints up to 3 fractional digits without trailing zeros.
+/// Examples: 1234567 → "1.234ms", 5678 → "5.678µs", 12000000000 → "12s".
+fn formatGoDuration(out: []u8, ns: u64) []const u8 {
+    if (ns == 0) return std.fmt.bufPrint(out, "0s", .{}) catch unreachable;
+
+    // Pick unit. Go falls through h/m/s for ≥ 1s, otherwise ms / µs / ns.
+    if (ns >= std.time.ns_per_s) {
+        const whole = ns / std.time.ns_per_s;
+        const frac_ms = (ns % std.time.ns_per_s) / std.time.ns_per_ms; // 0..999
+        if (frac_ms == 0) return std.fmt.bufPrint(out, "{d}s", .{whole}) catch unreachable;
+        return std.fmt.bufPrint(out, "{d}.{d:0>3}s", .{ whole, frac_ms }) catch unreachable;
+    }
+    if (ns >= std.time.ns_per_ms) {
+        const whole = ns / std.time.ns_per_ms;
+        const frac_us = (ns % std.time.ns_per_ms) / std.time.ns_per_us; // 0..999
+        if (frac_us == 0) return std.fmt.bufPrint(out, "{d}ms", .{whole}) catch unreachable;
+        return std.fmt.bufPrint(out, "{d}.{d:0>3}ms", .{ whole, frac_us }) catch unreachable;
+    }
+    if (ns >= std.time.ns_per_us) {
+        const whole = ns / std.time.ns_per_us;
+        const frac_ns = ns % std.time.ns_per_us; // 0..999
+        if (frac_ns == 0) return std.fmt.bufPrint(out, "{d}µs", .{whole}) catch unreachable;
+        return std.fmt.bufPrint(out, "{d}.{d:0>3}µs", .{ whole, frac_ns }) catch unreachable;
+    }
+    return std.fmt.bufPrint(out, "{d}ns", .{ns}) catch unreachable;
+}
+
+test "formatGoDuration: matches Go's time.Duration.String() shape" {
+    var buf: [32]u8 = undefined;
+    try std.testing.expectEqualStrings("0s", formatGoDuration(&buf, 0));
+    try std.testing.expectEqualStrings("123ns", formatGoDuration(&buf, 123));
+    try std.testing.expectEqualStrings("5µs", formatGoDuration(&buf, 5_000));
+    try std.testing.expectEqualStrings("5.678µs", formatGoDuration(&buf, 5_678));
+    try std.testing.expectEqualStrings("1ms", formatGoDuration(&buf, 1_000_000));
+    try std.testing.expectEqualStrings("1.234ms", formatGoDuration(&buf, 1_234_000));
+    try std.testing.expectEqualStrings("12s", formatGoDuration(&buf, 12_000_000_000));
+    try std.testing.expectEqualStrings("12.500s", formatGoDuration(&buf, 12_500_000_000));
 }
 
 // ---- /bzz: full-file (chunk-tree) retrieval ----

@@ -57,19 +57,25 @@ how forwarding-Kademlia does the heavy lifting on bee's side) is in
 
 ---
 
-**Current: 0.4 — bee-compatible read-only HTTP API.** zigbee
-connects to the live Swarm network through a single bootnode, learns
-other peers via hive, auto-dials up to N of them, holds those
-connections open, and serves a **bee-compatible HTTP API** that
-existing bee tools / dashboards / curl scripts can point at without
-modification: `/health`, `/readiness`, `/node`, `/addresses`,
-`/peers`, `/topology`, `/chunks/<addr>`, `/bytes/<ref>`,
-`/bzz/<ref>` and `/bzz/<ref>/<path>` — all byte-identical to bee
-on the same node, modulo on-chain endpoints we can't yet serve.
-Release notes:
+**Current: 0.4.2 — operational polish on top of 0.4's bee-compatible
+read-only API.** zigbee connects to the live Swarm network through a
+single bootnode, learns other peers via hive, auto-dials up to N of
+them, holds those connections open, and serves a **bee-compatible
+HTTP API** that existing bee tools / dashboards / curl scripts can
+point at without modification: `/health`, `/readiness`, `/node`,
+`/addresses`, `/peers`, `/topology`, `/chunks/<addr>`, `/bytes/<ref>`,
+`/bzz/<ref>`, `/bzz/<ref>/<path>` and (new in 0.4.2)
+`POST /pingpong/<peer-overlay>` — all byte-identical to bee on the
+same node, modulo on-chain endpoints we can't yet serve. The daemon
+now also exits cleanly on SIGINT/SIGTERM (closes connections with a
+clean FIN; bee no longer logs "broadcast failed"). Release notes:
 [`RELEASE_NOTES_0.3.md`](RELEASE_NOTES_0.3.md) (forwarding-Kademlia
-retrieval + manifest walking) and
-[`RELEASE_NOTES_0.4.md`](RELEASE_NOTES_0.4.md) (bee-compatible API).
+retrieval + manifest walking),
+[`RELEASE_NOTES_0.4.md`](RELEASE_NOTES_0.4.md) (bee-compatible API),
+[`RELEASE_NOTES_0.4.1.md`](RELEASE_NOTES_0.4.1.md) (persistent
+identity + dead-conn pruning + SOC validation), and
+[`RELEASE_NOTES_0.4.2.md`](RELEASE_NOTES_0.4.2.md) (handshake-print
+cleanup + `/pingpong` + graceful shutdown).
 
 **Zigbee never needs to know which peer stores a given chunk.** For
 every `/retrieve/<hex>` or `/bzz/<reference>` request, it sorts its
@@ -120,16 +126,21 @@ and reassembles multi-chunk files end-to-end:
 | Per-attempt 30 s watchdog (matches bee `RetrieveChunkTimeout`) | `src/p2p.zig` + `src/yamux.zig` | ✓ Condition.timedWait + `Stream.cancel()` (RST + signal) |
 | Chunk-tree (joiner) — multi-chunk file reassembly | `src/joiner.zig` | ✓ branching=128 walk, leaf if `span ≤ payload.len`, SOC-fed-as-CAC detection |
 | HTTP API (zigbee-native) | `src/p2p.zig` | ✓ `GET /retrieve/<hex>` (single chunk, payload-only, X-Chunk-Span header) |
-| HTTP API (bee-compatible read-only) | `src/p2p.zig` | ✓ `/health`, `/readiness`, `/node` (`beeMode: ultra-light`), `/addresses`, `/peers`, `/topology`, `/chunks/<addr>`, `/bytes/<ref>`, `/bzz/<ref>`, `/bzz/<ref>/<path>` — drop-in replacement for bee's read-only REST surface, byte-identical responses |
+| HTTP API (bee-compatible read-only) | `src/p2p.zig` | ✓ `/health`, `/readiness`, `/node` (`beeMode: ultra-light`), `/addresses`, `/peers`, `/topology`, `/chunks/<addr>`, `/bytes/<ref>`, `/bzz/<ref>`, `/bzz/<ref>/<path>`, `POST /pingpong/<peer-overlay>` — drop-in replacement for bee's read-only REST surface, byte-identical responses |
+| libp2p Ping initiator (`/ipfs/ping/1.0.0`) | `src/ping.zig` | ✓ used by `POST /pingpong/<peer>` (added 0.4.2) |
+| SOC validation (Single-Owner Chunks) | `src/soc.zig` | ✓ added 0.4.1; CAC then SOC in retrieval, returns `ChunkAddressMismatch` if neither validates |
+| Persistent libp2p identity + bzz nonce | `src/identity.zig` | ✓ added 0.4.1; 64-byte file at `~/.zigbee/identity.key` (atomic write) |
+| Graceful shutdown (SIGINT/SIGTERM) | `src/p2p.zig` | ✓ added 0.4.2; clean FIN on bee side |
 
 Plus the underlying primitives: secp256k1 (vendored libsecp256k1), Ethereum
 keccak/eip-191/recoverable-sig, BMT chunk addressing, libp2p PeerID multihash,
 multiaddr text/binary parser, hand-rolled protobuf.
 
-**62 unit tests pass** (`zig build test`), including vector tests against
+**74 unit tests pass** (`zig build test`), including vector tests against
 the official Noise XX KAT, bee golden vectors for chunk hashing/overlay
-derivation, end-to-end joiner round-trips for single-leaf and
-multi-leaf chunk-trees, and mantaray header-detection.
+derivation, the bee `pkg/soc/soc_test.go` SOC vector, end-to-end joiner
+round-trips for single-leaf and multi-leaf chunk-trees, mantaray header-
+detection, and Go-style duration-string golden samples.
 
 ## What zigbee is — ultra-light client
 
@@ -153,11 +164,12 @@ at one end and the file-reassembler.
 See [`ARCHITECTURE.md`](ARCHITECTURE.md) for diagrams and the threading
 model.
 
-## What 0.4 does NOT do
+## What 0.4.x does NOT do
 
-For the cases below the answer is "Phase 6+ work" — see
-[`PLAN.md`](PLAN.md). The current scope is read-only
-retrieval; everything below is acknowledged but deferred.
+For the cases below the answer is "0.5+ milestone work" — see
+[`PLAN.md`](PLAN.md) and [`docs/iot-roadmap.html`](docs/iot-roadmap.html).
+The current scope is read-only retrieval; everything below is
+acknowledged but deferred.
 
 - **SWAP / off-chain BZZ payment.** Bee charges per chunk it serves us.
   Without SWAP cheques we can retrieve **only ~25–30 chunks per peer
@@ -165,19 +177,15 @@ retrieval; everything below is acknowledged but deferred.
   triggers `apply debit: disconnect threshold exceeded` and bee drops
   us. Multi-peer iteration extends the budget to N × 25–30 chunks but
   it's still finite. **This is the wall in front of large-file
-  retrieval today.**
+  retrieval today.** SWAP cheques (issue-only, no on-chain cashing)
+  are the headline of 0.5.0.
 - **No push.** Cannot upload chunks (`/swarm/pushsync/1.3.1`). Requires
-  postage stamps + chain integration.
-- **No SOC validation.** Single-Owner Chunks are returned but not
-  cryptographically verified — we log a CAC mismatch and pass the bytes
-  through. The joiner's span sanity check catches the common error of
-  feeding a SOC reference to `/bzz/` (returns `LikelySocReference`).
-- **No `/bzz/<ref>/<path>` HTTP routing.** The mantaray walker
-  *supports* paths (multi-file manifests, websites). The HTTP route
-  doesn't yet parse the trailing path component — it always resolves
-  the manifest's default file (root metadata `website-index-document`).
+  postage stamps + chain integration. Planned in 0.6.0.
 - **No encrypted-chunk references** (`refLength = 64`; second 32 bytes
-  are the decryption key).
+  are the decryption key). Planned in 0.5.0.
+- **No local chunk store.** We never cache; every retrieval re-fetches
+  from a connected peer. Planned in 0.5.0 (basic LRU on
+  `~/.zigbee/store/`).
 
 ## Build
 

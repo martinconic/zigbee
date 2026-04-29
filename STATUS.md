@@ -1,12 +1,12 @@
 # zigbee — operational status snapshot
 
-**Release:** 0.4.1 — persistent identity + dead-conn pruning + SOC validation ([release notes](RELEASE_NOTES_0.4.1.md), preceded by [0.4 release notes](RELEASE_NOTES_0.4.md))
+**Release:** 0.4.2 — operational polish: handshake-print cleanup + `/pingpong/<peer>` HTTP + graceful shutdown ([release notes](RELEASE_NOTES_0.4.2.md), preceded by [0.4.1](RELEASE_NOTES_0.4.1.md) and [0.4](RELEASE_NOTES_0.4.md))
 **Headline focus:** **IoT / embedded.** zigbee is the small-footprint Bee client family for devices that can't run Go bee. Locked in 2026-04-28; framing detail in [`docs/iot-roadmap.html`](docs/iot-roadmap.html).
 **Next milestone:** 0.5.0 — retrieval-maturity (local store + encrypted refs + SWAP cheques, issue-only, ~10 work-weeks FTE).
 **Strategy references:** [`docs/iot-roadmap.html`](docs/iot-roadmap.html) (IoT-specific roadmap) + [`docs/strategy.html`](docs/strategy.html) (full strategic dossier)
-**Date last refreshed:** 2026-04-28
-**Tests:** 73/73 unit tests pass (`zig build test --summary all`)
-**Source size:** ~8,800 lines of Zig across 28 files in `zigbee/src/`
+**Date last refreshed:** 2026-04-29
+**Tests:** 74/74 unit tests pass (`zig build test --summary all`)
+**Source size:** ~8,840 lines of Zig across 28 files in `zigbee/src/`
 **Repository:** https://github.com/martinconic/zigbee (public, BSD-3-Clause)
 **Live status against bee:** verified end-to-end against a local bee
 (`bee/v2.7.2-rc1`, sepolia testnet config) and against the public
@@ -27,7 +27,7 @@ first.
 | **Repo (local)** | `/home/calin/work/swarm/bee-clients/zigbee` |
 | **Repo (GitHub)** | https://github.com/martinconic/zigbee |
 | **Default branch** | `main` (in sync with `origin/main`) |
-| **Latest tag** | `v0.4.1` |
+| **Latest tag** | `v0.4.2` (next; 0.4.1 was the prior release) |
 | **Bee source we cross-reference** | `/home/calin/work/swarm/dev/bee` (Go) |
 | **Spec PDFs** | `/home/calin/work/swarm/bee-clients/docs/{swarm_protocol_spec.pdf, the-book-of-swarm-2.pdf}` |
 | **Local bee binary** | `/tmp/bee` (testnet config: `/home/calin/work/swarm/bee-clients/testnet.yaml`) |
@@ -37,7 +37,7 @@ first.
 
 ```bash
 cd /home/calin/work/swarm/bee-clients/zigbee
-zig build test --summary all   # expect: 73/73 tests passed
+zig build test --summary all   # expect: 74/74 tests passed
 ```
 
 ### What's done (per-release)
@@ -63,6 +63,16 @@ zig build test --summary all   # expect: 73/73 tests passed
   signature-validated with bee-golden-vector test, returns
   `ChunkAddressMismatch` on neither-CAC-nor-SOC).
   ([RELEASE_NOTES_0.4.1.md](RELEASE_NOTES_0.4.1.md))
+- **0.4.2** — clears the three smaller pending items left over
+  after 0.4.1: (a) strip 10 noisy `std.debug.print` lines from the
+  Noise XX hot path in `noise.zig` (per-attempt `[dialer]` /
+  `[retrieve]` logs are kept), (b) `POST /pingpong/<peer-overlay>`
+  HTTP endpoint — bee shape, returns `{"rtt":"<duration>"}` with
+  Go-style duration formatting, (c) graceful shutdown on
+  SIGINT/SIGTERM — module-level atomic flag + poll-gated
+  `serveApi` loop + dialer-thread join, so bee no longer logs
+  "broadcast failed" when we exit.
+  ([RELEASE_NOTES_0.4.2.md](RELEASE_NOTES_0.4.2.md))
 
 ### What's open / pending (development plan locked in 2026-04-28)
 
@@ -106,13 +116,10 @@ HTML page, opens in any browser); the per-task list lives in
 
 ### Smaller pending items not on the milestone path
 
-- **Task #9** — strip noisy debug prints from handshake hot path.
-  Cosmetic; the per-attempt logs are still useful for development.
-- **`/pingpong/<peer>` HTTP endpoint** — bee has it. We have a Ping
-  responder; needs an initiator + an HTTP route. ~30 lines.
-- **Graceful shutdown.** Daemon currently runs until SIGKILL; on
-  exit the TCP RST leaves bee with a "broadcast failed" log line.
-  Cosmetic.
+All three smaller items shipped in 0.4.2 (handshake-print cleanup,
+`/pingpong/<peer>` HTTP endpoint, graceful shutdown). Nothing
+outstanding here right now — the next concrete work is 0.5.0
+retrieval-maturity above.
 
 ### Conventions / preferences observed in this project
 
@@ -162,6 +169,8 @@ Zigbee is an **ultra-light Swarm client** — even lighter than bee's `light: tr
 | Mantaray manifest walking (default-document) | ✅ — `/bzz/<manifest-ref>` byte-identical to `bee /bzz/<ref>/` |
 | Manifest path lookups (`/bzz/<ref>/<path>` for multi-file) | ✅ — HTTP route parses trailing path, walker does the lookup, byte-identical to `bee /bzz/<ref>/<path>` (added in 0.4) |
 | Bee-compatible read-only HTTP API (`/health`, `/node`, `/addresses`, `/peers`, `/topology`, `/chunks`, `/bytes`) | ✅ added in 0.4 — drop-in for bee tools |
+| `POST /pingpong/<peer-overlay>` (bee `pkg/api/pingpong.go`) | ✅ added in 0.4.2 — opens a stream, runs `/ipfs/ping/1.0.0`, returns `{"rtt":"<duration>"}` Go-style |
+| Graceful shutdown on SIGINT/SIGTERM | ✅ added in 0.4.2 — atomic flag + poll-gated `serveApi` + dialer-thread join → bee no longer logs "broadcast failed" |
 | Encrypted-chunk references | ❌ (refLength=64 not handled) |
 
 In bee's terms zigbee is closer to *no-storer client* than *light node*;
@@ -207,6 +216,7 @@ bee peers zigbee is connected to.
 | `src/connection.zig` | Heap-allocated `Connection` owns TCP + NoiseStream + YamuxSession; `dial()` runs the full upstream stack; `startAcceptLoop()` spawns a per-connection accept thread with caller-provided dispatcher; `openStream()` for outbound; **`dead: atomic.Value(bool)` set when the accept loop exits (any reason)** — feeds the manage-tick reaper | live |
 | `src/p2p.zig` | The host: dial path, multi-peer connection list, hive-fed auto-dialer with retry-with-backoff and a 15 s manage tick that **prunes dead connections** then re-queues unconnected peers, XOR-asc retrieval iteration (skips dead conns), **30 s per-attempt watchdog**, HTTP API (`/retrieve`, `/bzz`, `/peers`) | live |
 | `src/main.zig` | CLI — `zigbee [resolve|retrieve|daemon]` | — |
+| `src/p2p.zig` (0.4.2 additions) | `POST /pingpong/<overlay>` route + `formatGoDuration` helper + `g_shutdown` atomic + SIGINT/SIGTERM handler + poll-gated `serveApi` + joinable dialer thread | ✓ unit (`formatGoDuration` golden samples) |
 | `src/root.zig` | Module entry point | — |
 
 ---
@@ -303,22 +313,27 @@ of bee's accounting threshold (Phase 6 SWAP work).
 | Overlay regenerated on every restart, breaking bee accounting state | Persistent identity (0.4.1a) saved only the secp256k1 key — overlay also depends on `nonce`, which was still randomized in `P2PNode.init` | File format extended to 64 bytes (key ‖ nonce); `loadOrCreate` returns both; `P2PNode.init` accepts nonce as a parameter |
 | Dead `Connection`s accumulated forever after bee disconnected us | Accept thread exited but `node.connections` was never pruned (0.4.1b) | Add `Connection.dead` atomic, set via `defer` on accept-loop exit; `pruneDeadConnections()` called by manage tick (which had to be moved before the connectionCount gate, otherwise dead conns kept the dialer asleep) |
 | SOC validation matched against the raw `keccak256(id ‖ inner_addr)` digest and recovery returned the wrong owner (0.4.1c) | Bee's `crypto.Recover` applies EIP-191 prefix internally, even though SOC isn't an Ethereum-message signature in spirit | Sign/recover over `keccak256("\x19Ethereum Signed Message:\n32" ‖ to_sign)` instead; bee's `pkg/soc/soc_test.go` golden vector now passes |
+| Daemon flooded stderr with 10 Noise-XX prints per peer (0.4.2a) | `processHandshakeInitiator` / `processHandshakeResponder` had `std.debug.print` calls left over from initial debugging | Stripped all 10; per-attempt `[dialer]` / `[retrieve]` logs in `p2p.zig` are kept (still useful for development) |
+| `daemon` had no clean-exit path (0.4.2c) | Process killed → kernel TCP RST → bee logged "broadcast failed" | Module-level `g_shutdown: std.atomic.Value(bool)` + SIGINT/SIGTERM `sigaction` handler + `std.posix.poll(.., 200ms)`-gated `serveApi` accept loop + dialer-thread join — bee sees a clean FIN |
+| Pingpong endpoint missing (0.4.2b) | Bee tools polling `POST /pingpong/<addr>` got 404 | Route added; reuses the existing `ping.ping` client + a Go-style `formatGoDuration` helper |
 
 ---
 
 ## Risks / known issues to keep in mind
 
-- **`GeneralPurposeAllocator` deinit is called in `main.zig`**, but
-  threads detached from the daemon (per-API-request handlers, watchdog
-  threads, dialer worker) outlive the parent function. For a real
-  long-running service we'd need a graceful shutdown that joins all
-  detached threads.
 - **Hardcoded threshold-announce of 13 500 000 wei.** That's bee's full-
   node default; a real light node would announce something lower and
   refresh via SWAP cheques. Without SWAP, this number doesn't actually
   buy us anything beyond the per-peer disconnect threshold (~1.35 M).
-- **`processHandshakeInitiator` debug prints still in place** (Sent
-  Initiator Ephemeral Key, etc.). Task #9 — strip them when we have a
-  proper logger module. Useful for development.
-- **No graceful shutdown.** `zigbee daemon` runs until killed; the TCP
-  RST on exit leaves bee with a "broadcast failed" log. Cosmetic.
+- **Detached per-request API handler threads not joined on shutdown.**
+  0.4.2c joins the dialer thread cleanly and the listener stops
+  accepting, but in-flight `/bzz` retrievals running on detached
+  handler threads finish on their own (≤30 s thanks to the watchdog).
+  Process exit reaps them. Acceptable for now; promote to a real fix
+  when graceful shutdown is itself stress-tested under heavy
+  concurrent retrieval load.
+- **No proactive Yamux GoAway frame on shutdown.** We close the TCP
+  socket directly via `Connection.deinit`; bee sees an orderly EOF
+  and ends the session normally — that's enough to suppress
+  "broadcast failed". A real GoAway is a ≤10-line follow-up if a
+  future peer needs it.

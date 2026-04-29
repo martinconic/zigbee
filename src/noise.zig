@@ -186,8 +186,6 @@ pub const NoiseState = struct {
     /// Performs the XX Handshake as the Responder (Listener).
     /// Symmetric counterpart to processHandshakeInitiator: reverses DH directions.
     pub fn processHandshakeResponder(self: *NoiseState, stream: anytype, id: *const identity.Identity) !NoiseStream {
-        std.debug.print("Initializing Noise Handshake as RESPONDER...\n", .{});
-
         // 1. Read `-> e` from initiator.
         var buffer: [65535]u8 = undefined;
         const msg1_len = try NoiseState.readNoiseFrame(stream, &buffer);
@@ -299,8 +297,6 @@ pub const NoiseState = struct {
 
     /// Performs the XX Handshake as the Initiator (Dialer)
     pub fn processHandshakeInitiator(self: *NoiseState, stream: anytype, id: *const identity.Identity) !NoiseStream {
-        std.debug.print("Initializing Noise Handshake as INITIATOR...\n", .{});
-        
         // 1. Send `-> e`. Per Noise spec, every WriteMessage finishes with
         // EncryptAndHash(payload). With an empty payload and no key yet, that
         // reduces to MixHash(empty) — which still updates h. Skipping it makes
@@ -308,12 +304,10 @@ pub const NoiseState = struct {
         self.sym_state.mixHash(&self.local_ephemeral.public_key);
         self.sym_state.mixHash(&[_]u8{});
         try NoiseState.writeNoiseFrame(stream, &self.local_ephemeral.public_key);
-        std.debug.print("Sent Initiator Ephemeral Key (`e`). Waiting for Responder...\n", .{});
-        
+
         // 2. Read `<- e, ee, s, es`
         var buffer: [65535]u8 = undefined;
         const msg2_len = try NoiseState.readNoiseFrame(stream, &buffer);
-        std.debug.print("Received message 2 from Responder. Length: {d} bytes\n", .{msg2_len});
 
         if (msg2_len < 32) return error.HandshakeFailed;
 
@@ -332,8 +326,7 @@ pub const NoiseState = struct {
         var rs: [32]u8 = undefined;
         try self.sym_state.decryptAndHash(buffer[32..80], &rs);
         self.remote_static = rs;
-        std.debug.print("Successfully decrypted remote static key.\n", .{});
-        
+
         // Perform DH(es) -> Note: Initiator es is local ephemeral and remote static
         const es_shared = try X25519.scalarmult(self.local_ephemeral.secret_key, rs);
         self.sym_state.mixKey(&es_shared);
@@ -342,8 +335,7 @@ pub const NoiseState = struct {
         const payload_ct_len = msg2_len - 80;
         var payload_pt: [65535]u8 = undefined;
         try self.sym_state.decryptAndHash(buffer[80..msg2_len], payload_pt[0 .. payload_ct_len - 16]);
-        std.debug.print("Successfully decrypted Responder's NoiseHandshakePayload!\n", .{});
-        
+
         // Decode and verify the payload
         const payload_data = payload_pt[0 .. payload_ct_len - 16];
         const payload = try proto.decodeNoiseHandshakePayload(payload_data);
@@ -365,12 +357,8 @@ pub const NoiseState = struct {
             responder_libp2p_key.data,
             &msg_to_sign,
             payload.identity_sig,
-        ) catch |e| {
-            std.debug.print("Responder signature verification FAILED: {any}\n", .{e});
-            return error.HandshakeFailed;
-        };
-        std.debug.print("Responder signature VALID (key_type={d}).\n", .{responder_libp2p_key.key_type});
-        
+        ) catch return error.HandshakeFailed;
+
         // 3. Send `-> s, se`
         var msg3: [1024]u8 = undefined;
         var msg3_len: usize = 0;
@@ -441,12 +429,10 @@ pub const NoiseState = struct {
         msg3_len += pt_payload.len + 16;
 
         try NoiseState.writeNoiseFrame(stream, msg3[0..msg3_len]);
-        std.debug.print("Sent message 3 (`s`, `se`). Noise Handshake Complete!\n", .{});
-        
+
         // 4. Split SymmetricState to get Transport Keys
         const keys = self.sym_state.split();
         // For Initiator, c1 (keys[0]) is tx, c2 (keys[1]) is rx
-        std.debug.print("Transport phase initialized.\n", .{});
         var ns = NoiseStream.init(stream, keys[0], keys[1]);
         if (responder_libp2p_key.data.len <= ns.peer_libp2p_key_buf.len) {
             ns.peer_libp2p_key_type = responder_libp2p_key.key_type;
