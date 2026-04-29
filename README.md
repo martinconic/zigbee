@@ -22,22 +22,21 @@ SWAP-paid retrieval, paired with bundled scripts at
 
 ## TL;DR — retrieve a file by its Swarm reference
 
-Four commands. Point zigbee at *any* reachable bee (a public bootnode
+Three commands. Point zigbee at *any* reachable bee (a public bootnode
 works) and you can fetch chunks and files by reference, with no peer
 addresses to manage:
 
 ```bash
-# 0. Get the source.
-git clone https://github.com/martinconic/zigbee.git
-cd zigbee
+# 1. Grab a pre-built binary (Linux x86_64 example; full list on the
+#    Releases page). For other platforms swap the filename — see
+#    https://github.com/martinconic/zigbee/releases/latest.
+curl -L -o zigbee https://github.com/martinconic/zigbee/releases/latest/download/zigbee-linux-amd64-musl
+chmod +x zigbee
 
-# 1. Build once.
-zig build
-
-# 2. Start the daemon. It dials the --peer node, learns other peers from
-#    bee's hive, auto-dials up to 4 of them, and serves an HTTP API on
-#    127.0.0.1:9090.
-./zig-out/bin/zigbee --peer 167.235.96.31:32491 --network-id 10 daemon &
+# 2. Start the daemon. It resolves the bootnode, dials in, learns other
+#    peers from bee's hive, auto-dials up to 4 of them, and serves an
+#    HTTP API on 127.0.0.1:9090.
+./zigbee --bootnode /dnsaddr/sepolia.testnet.ethswarm.org --network-id 10 daemon &
 sleep 20      # let the dialer fan out
 
 # 3. Retrieve a file by reference. Zigbee picks the XOR-closest connected
@@ -45,6 +44,9 @@ sleep 20      # let the dialer fan out
 #    the chunks through the network. No peer address needed.
 curl -o myfile.bin "http://127.0.0.1:9090/bzz/<64-char-hex-reference>"
 ```
+
+Want to build from source instead? `git clone` the repo, `zig build`
+(requires Zig 0.15.x and a C toolchain for the vendored libsecp256k1).
 
 That's the whole user-facing flow. Sanity checks and more variants in
 [`docs/usage.md`](docs/usage.md). The architecture (why no peer address is needed,
@@ -62,10 +64,16 @@ how forwarding-Kademlia does the heavy lifting on bee's side) is in
 
 ---
 
-**Current: 0.5.1.** 0.5.1 adds a `--bootnode` flag that accepts
-`/dnsaddr/<host>` or `/ip4/.../tcp/...` multiaddrs (mirrors bee's
-`testnet.yaml` `bootnode:` field) — point zigbee at a hostname,
-it resolves, tries each candidate in order until one connects.
+**Current: 0.5.2.** 0.5.2 ships **pre-built binaries for six
+platforms** (Linux x86_64/arm64/armv7 musl + arm64 glibc, macOS
+Intel + Apple Silicon) on the GitHub Release page — no Zig
+toolchain needed to run zigbee. The build now compiles libsecp256k1
+from C sources directly in `build.zig`, so `zig build -Dtarget=...`
+works for any target zig supports. 0.5.1 added a `--bootnode` flag
+that accepts `/dnsaddr/<host>` or `/ip4/.../tcp/...` multiaddrs
+(mirrors bee's `testnet.yaml` `bootnode:` field) — point zigbee at
+a hostname, it resolves, tries each candidate in order until one
+connects.
 On top of 0.5.0's **retrieval-maturity:** local chunk-store cache,
 encrypted-chunk references, and SWAP cheques (issue-only) — all
 live-verified end-to-end against bee on Sepolia (2026-04-29).
@@ -79,8 +87,9 @@ threshold trips, byte-identical to bee's golden vector. The daemon
 exits cleanly on SIGINT/SIGTERM and persists per-peer cumulative
 state next to the chequebook credential, so backup/restore works
 as a unit. Release notes:
-[`docs/release-notes/0.5.1.md`](docs/release-notes/0.5.1.md) (`--bootnode`
-flag, this release),
+[`docs/release-notes/0.5.2.md`](docs/release-notes/0.5.2.md)
+(cross-compile build + multi-platform binaries, this release),
+[`0.5.1.md`](docs/release-notes/0.5.1.md) (`--bootnode` flag),
 [`0.5.0.md`](docs/release-notes/0.5.0.md) (retrieval-maturity:
 chunk store + encrypted refs + SWAP cheques),
 [`0.4.2.md`](docs/release-notes/0.4.2.md) (handshake-print cleanup +

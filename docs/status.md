@@ -1,6 +1,6 @@
 # zigbee — operational status snapshot
 
-**Release:** 0.5.1 (tagged) — adds `--bootnode` flag (`/dnsaddr/<host>` or `/ip4/.../tcp/...`, mirrors bee's `testnet.yaml`). Built on 0.5.0's retrieval-maturity: local chunk store + encrypted-chunk refs + SWAP cheques (issue-only), live-verified end-to-end against bee on Sepolia. ([0.5.1 release notes](release-notes/0.5.1.md), preceded by [0.5.0](release-notes/0.5.0.md), [0.4.2](release-notes/0.4.2.md), [0.4.1](release-notes/0.4.1.md), [0.4](release-notes/0.4.md))
+**Release:** 0.5.2 (tagged) — first multi-platform binary release. `build.zig` compiles libsecp256k1 from C sources; `zig build -Dtarget=...` cross-compiles to six targets (Linux x86_64/arm64/armv7 musl + arm64 glibc, macOS Intel + Apple Silicon). Pre-built binaries on the GitHub Release page — no Zig toolchain needed to run zigbee. Built on 0.5.1's `--bootnode` flag and 0.5.0's retrieval-maturity (local chunk store + encrypted-chunk refs + SWAP cheques). ([0.5.2 release notes](release-notes/0.5.2.md), preceded by [0.5.1](release-notes/0.5.1.md), [0.5.0](release-notes/0.5.0.md), [0.4.2](release-notes/0.4.2.md), [0.4.1](release-notes/0.4.1.md), [0.4](release-notes/0.4.md))
 **Next on `main` (0.6.0 milestone):** push — postage stamp parser + verifier + issuer + `/swarm/pushsync/1.3.1` initiator + `POST /bytes` and `POST /bzz` upload API. ~12 work-weeks FTE. Per-target chain integration stays an outer ring (operator-side provisioning), not zigbee core.
 **Headline focus:** **IoT / embedded.** zigbee is the small-footprint Bee client family for devices that can't run Go bee. Locked in 2026-04-28; framing detail in [`iot-roadmap.html`](iot-roadmap.html).
 **Strategy references:** [`iot-roadmap.html`](iot-roadmap.html) (IoT-specific roadmap) + [`strategy.html`](strategy.html) (full strategic dossier)
@@ -30,7 +30,7 @@ first.
 | **Repo (local)** | `/home/calin/work/swarm/bee-clients/zigbee` |
 | **Repo (GitHub)** | https://github.com/martinconic/zigbee |
 | **Default branch** | `main` (in sync with `origin/main`) |
-| **Latest tag** | `v0.5.1` (0.6.0 push milestone is the next concrete work on `main`) |
+| **Latest tag** | `v0.5.2` (0.6.0 push milestone is the next concrete work on `main`) |
 | **Bee source we cross-reference** | `/home/calin/work/swarm/dev/bee` (Go) |
 | **Spec PDFs** | `/home/calin/work/swarm/bee-clients/docs/{swarm_protocol_spec.pdf, the-book-of-swarm-2.pdf}` |
 | **Local bee binary** | `/home/calin/work/swarm/bee-clients/bee/bee-bin` (built locally with `go build -o ./bee-bin ./cmd/bee/` inside the `bee/` repo; ~70 MB; gitignored). Testnet config: `/home/calin/work/swarm/bee-clients/testnet.yaml`. |
@@ -76,6 +76,19 @@ zig build test --summary all   # expect: 113/113 tests passed
   `serveApi` loop + dialer-thread join, so bee no longer logs
   "broadcast failed" when we exit.
   ([0.4.2 release notes](release-notes/0.4.2.md))
+- **0.5.2** *(tagged 2026-04-29)* — **first multi-platform binary
+  release.** `build.zig` now compiles libsecp256k1 from C sources
+  directly (`-DENABLE_MODULE_RECOVERY=1`, three .c files), so
+  `zig build -Dtarget=...` cross-compiles to any target zig supports
+  with no external toolchain. CI workflow at
+  `.github/workflows/release.yml` builds **six binaries** on every
+  `v*.*.*` tag push: Linux x86_64-musl, arm64-musl, arm64-gnu,
+  armv7-musl (Pi Zero W), macOS x86_64, macOS arm64. Sizes
+  1.9–6.8 MB ReleaseSafe. Plus a small alignment fix in
+  `src/store.zig` so `@fieldParentPtr` works on 32-bit ARM (Entry has
+  alignment 8 due to its u64 field; Node only 4 on arm32). No
+  protocol or behaviour change. See
+  [`release-notes/0.5.2.md`](release-notes/0.5.2.md).
 - **0.5.1** *(tagged 2026-04-29)* — **`--bootnode` flag.** Accepts
   `/dnsaddr/<host>` or `/ip4/.../tcp/.../p2p/...` multiaddrs, mirrors
   bee's `testnet.yaml` `bootnode:` field. zigbee resolves DNS internally,

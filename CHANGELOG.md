@@ -4,6 +4,7 @@ Per-release notes live in [`docs/release-notes/`](docs/release-notes/).
 
 | Release | Date | Headline |
 |---|---|---|
+| [`0.5.2`](docs/release-notes/0.5.2.md) | 2026-04-29 | First multi-platform binary release. `build.zig` compiles libsecp256k1 from C sources, enabling cross-compile to six targets (Linux x86_64/arm64/armv7 musl + arm64 glibc, macOS Intel + Apple Silicon). Pre-built binaries attached to the GitHub Release page — no Zig toolchain needed to run. |
 | [`0.5.1`](docs/release-notes/0.5.1.md) | 2026-04-29 | New `--bootnode` flag — accepts `/dnsaddr/<host>` or `/ip4/.../tcp/...` multiaddr; auto-resolves and tries candidates in order. |
 | [`0.5.0`](docs/release-notes/0.5.0.md) | 2026-04-29 | Retrieval-maturity: local chunk store, encrypted-chunk references, SWAP cheques (issue-only) — live-verified end-to-end on Sepolia. |
 | [`0.4.2`](docs/release-notes/0.4.2.md) | 2026-04-29 | Handshake-print cleanup, `POST /pingpong/<peer>`, graceful SIGINT/SIGTERM shutdown. |
