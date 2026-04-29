@@ -42,9 +42,9 @@ curl -o myfile.bin "http://127.0.0.1:9090/bzz/<64-char-hex-reference>"
 ```
 
 That's the whole user-facing flow. Sanity checks and more variants in
-[`USAGE.md`](USAGE.md). The architecture (why no peer address is needed,
+[`docs/usage.md`](docs/usage.md). The architecture (why no peer address is needed,
 how forwarding-Kademlia does the heavy lifting on bee's side) is in
-[`ARCHITECTURE.md`](ARCHITECTURE.md).
+[`docs/architecture.md`](docs/architecture.md).
 
 > **Both upload styles work.** Bee has two upload endpoints —
 > `POST /bytes` (raw, returns a CAC reference) and `POST /bzz` (the
@@ -70,15 +70,15 @@ threshold trips, byte-identical to bee's golden vector. The daemon
 exits cleanly on SIGINT/SIGTERM and persists per-peer cumulative
 state next to the chequebook credential, so backup/restore works
 as a unit. Release notes:
-[`RELEASE_NOTES_0.5.0.md`](RELEASE_NOTES_0.5.0.md) (retrieval-
+[`docs/release-notes/0.5.0.md`](docs/release-notes/0.5.0.md) (retrieval-
 maturity, this release),
-[`RELEASE_NOTES_0.4.2.md`](RELEASE_NOTES_0.4.2.md) (handshake-print
-cleanup + `/pingpong` + graceful shutdown),
-[`RELEASE_NOTES_0.4.1.md`](RELEASE_NOTES_0.4.1.md) (persistent
-identity + dead-conn pruning + SOC validation),
-[`RELEASE_NOTES_0.4.md`](RELEASE_NOTES_0.4.md) (bee-compatible API),
-[`RELEASE_NOTES_0.3.md`](RELEASE_NOTES_0.3.md) (forwarding-Kademlia
-retrieval + manifest walking).
+[`0.4.2.md`](docs/release-notes/0.4.2.md) (handshake-print cleanup +
+`/pingpong` + graceful shutdown),
+[`0.4.1.md`](docs/release-notes/0.4.1.md) (persistent identity +
+dead-conn pruning + SOC validation),
+[`0.4.md`](docs/release-notes/0.4.md) (bee-compatible API),
+[`0.3.md`](docs/release-notes/0.3.md) (forwarding-Kademlia retrieval +
+manifest walking).
 
 **Zigbee never needs to know which peer stores a given chunk.** For
 every `/retrieve/<hex>` or `/bzz/<reference>` request, it sorts its
@@ -101,8 +101,8 @@ You do **not** need to run your own bee — see
 [Daemon mode against a public bootnode](#daemon-mode-against-a-public-bootnode).
 
 For the multi-month roadmap (push, full hive routing, on-chain integration,
-SOC validation, full-node mode, etc.) see [`PLAN.md`](PLAN.md).
-For the current operational status / open issues see [`STATUS.md`](STATUS.md).
+SOC validation, full-node mode, etc.) see [`docs/plan.md`](docs/plan.md).
+For the current operational status / open issues see [`docs/status.md`](docs/status.md).
 
 ---
 
@@ -175,14 +175,14 @@ through ourselves, never do a Kademlia lookup. Bee's swarm of peers
 does the forwarding-Kademlia walk on our behalf; we're the requester
 at one end and the file-reassembler.
 
-See [`ARCHITECTURE.md`](ARCHITECTURE.md) for diagrams and the threading
-model.
+See [`docs/architecture.md`](docs/architecture.md) for diagrams and the
+threading model.
 
 ## What 0.5 does NOT do
 
 The current scope is **read-only retrieval with off-chain payment**.
 Push (uploads), full chain integration, and the embedded ports are
-later milestones — see [`PLAN.md`](PLAN.md) and
+later milestones — see [`docs/plan.md`](docs/plan.md) and
 [`docs/iot-roadmap.html`](docs/iot-roadmap.html).
 
 - **No push.** Cannot upload chunks (`/swarm/pushsync/1.3.1`).
@@ -700,7 +700,7 @@ identity).
 
 ## Roadmap
 
-See [`PLAN.md`](PLAN.md) and [`docs/iot-roadmap.html`](docs/iot-roadmap.html).
+See [`docs/plan.md`](docs/plan.md) and [`docs/iot-roadmap.html`](docs/iot-roadmap.html).
 With 0.5.0 shipped, next planned work is **0.6.0 — push** (postage stamp
 parser + verifier + issuer + `/swarm/pushsync/1.3.1` initiator +
 `POST /bytes` and `POST /bzz` upload routes). After that: 0.7 ARM/MCU

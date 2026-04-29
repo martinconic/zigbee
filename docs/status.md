@@ -1,9 +1,9 @@
 # zigbee — operational status snapshot
 
-**Release:** 0.5.0 (tagged) — retrieval-maturity: local chunk store + encrypted-chunk refs + SWAP cheques (issue-only), live-verified end-to-end against bee on Sepolia. ([0.5.0 release notes](RELEASE_NOTES_0.5.0.md), preceded by [0.4.2](RELEASE_NOTES_0.4.2.md), [0.4.1](RELEASE_NOTES_0.4.1.md), [0.4](RELEASE_NOTES_0.4.md))
+**Release:** 0.5.0 (tagged) — retrieval-maturity: local chunk store + encrypted-chunk refs + SWAP cheques (issue-only), live-verified end-to-end against bee on Sepolia. ([0.5.0 release notes](release-notes/0.5.0.md), preceded by [0.4.2](release-notes/0.4.2.md), [0.4.1](release-notes/0.4.1.md), [0.4](release-notes/0.4.md))
 **Next on `main` (0.6.0 milestone):** push — postage stamp parser + verifier + issuer + `/swarm/pushsync/1.3.1` initiator + `POST /bytes` and `POST /bzz` upload API. ~12 work-weeks FTE. Per-target chain integration stays an outer ring (operator-side provisioning), not zigbee core.
-**Headline focus:** **IoT / embedded.** zigbee is the small-footprint Bee client family for devices that can't run Go bee. Locked in 2026-04-28; framing detail in [`docs/iot-roadmap.html`](docs/iot-roadmap.html).
-**Strategy references:** [`docs/iot-roadmap.html`](docs/iot-roadmap.html) (IoT-specific roadmap) + [`docs/strategy.html`](docs/strategy.html) (full strategic dossier)
+**Headline focus:** **IoT / embedded.** zigbee is the small-footprint Bee client family for devices that can't run Go bee. Locked in 2026-04-28; framing detail in [`iot-roadmap.html`](iot-roadmap.html).
+**Strategy references:** [`iot-roadmap.html`](iot-roadmap.html) (IoT-specific roadmap) + [`strategy.html`](strategy.html) (full strategic dossier)
 **Date last refreshed:** 2026-04-29
 **Tests:** 107/107 unit tests pass (`zig build test --summary all`)
 **Source size:** ~11,500 lines of Zig across 34 files in `zigbee/src/` (added in 0.5.0: `src/store.zig`, `src/encryption.zig`, `src/cheque.zig`, `src/swap.zig`, `src/accounting.zig`, `src/credential.zig`)
@@ -46,18 +46,18 @@ zig build test --summary all   # expect: 107/107 tests passed
 ### What's done (per-release)
 
 - **0.1** — single-chunk retrieval over forwarding-Kademlia. CLI:
-  `zigbee retrieve <hex> -o file`. ([RELEASE_NOTES_0.1.md](RELEASE_NOTES_0.1.md))
+  `zigbee retrieve <hex> -o file`. ([0.1 release notes](release-notes/0.1.md))
 - **0.3** — daemon mode, multi-peer connection management with retry/
   backoff and a manage tick, spec §1.5 origin retry, 30 s per-attempt
   timeout, chunk-tree joiner for multi-chunk files, mantaray manifest
   walker for `/bzz/<ref>` (default-document resolution).
-  ([RELEASE_NOTES_0.3.md](RELEASE_NOTES_0.3.md))
+  ([0.3 release notes](release-notes/0.3.md))
 - **0.4** — bee-compatible read-only HTTP API: `/health`,
   `/readiness`, `/node` (`beeMode: ultra-light`), `/addresses`,
   `/peers`, `/topology`, `/chunks/<addr>`, `/bytes/<ref>`,
   `/bzz/<ref>`, `/bzz/<ref>/<path>` — drop-in for bee's read-only
   REST surface, byte-identical responses on the storage endpoints.
-  ([RELEASE_NOTES_0.4.md](RELEASE_NOTES_0.4.md))
+  ([0.4 release notes](release-notes/0.4.md))
 - **0.4.1** — three small operability/correctness wins shipped
   together: (a) persistent libp2p identity + bzz nonce in
   `~/.zigbee/identity.key` (atomic-write), (b) dead-connection
@@ -65,7 +65,7 @@ zig build test --summary all   # expect: 107/107 tests passed
   validation in retrieval (was: pass-through unverified; now
   signature-validated with bee-golden-vector test, returns
   `ChunkAddressMismatch` on neither-CAC-nor-SOC).
-  ([RELEASE_NOTES_0.4.1.md](RELEASE_NOTES_0.4.1.md))
+  ([0.4.1 release notes](release-notes/0.4.1.md))
 - **0.4.2** — clears the three smaller pending items left over
   after 0.4.1: (a) strip 10 noisy `std.debug.print` lines from the
   Noise XX hot path in `noise.zig` (per-attempt `[dialer]` /
@@ -75,10 +75,10 @@ zig build test --summary all   # expect: 107/107 tests passed
   SIGINT/SIGTERM — module-level atomic flag + poll-gated
   `serveApi` loop + dialer-thread join, so bee no longer logs
   "broadcast failed" when we exit.
-  ([RELEASE_NOTES_0.4.2.md](RELEASE_NOTES_0.4.2.md))
+  ([0.4.2 release notes](release-notes/0.4.2.md))
 - **0.5.0** *(tagged 2026-04-29)* — **retrieval-maturity.** Three
   sub-items shipped together; full prose in
-  [`RELEASE_NOTES_0.5.0.md`](RELEASE_NOTES_0.5.0.md):
+  [`release-notes/0.5.0.md`](release-notes/0.5.0.md):
   - **0.5a** local flat-file chunk store with basic LRU. `src/store.zig`,
     atomic write, hashmap + DLL LRU under one mutex, startup scan
     rebuilds the index. CLI: `--store-path` / `--store-max-bytes`
@@ -107,9 +107,9 @@ zig build test --summary all   # expect: 107/107 tests passed
 
 The strategic conversation following the 0.4 release ended with an
 agreed four-milestone roadmap. Captured in detail at
-[`docs/strategy.html`](docs/strategy.html) (single self-contained
-HTML page, opens in any browser); the per-task list lives in
-[`PLAN.md`](PLAN.md) §9.
+[`strategy.html`](strategy.html) (single self-contained HTML page,
+opens in any browser); the per-task list lives in
+[`plan.md`](plan.md) §9.
 
 **0.5.0 retrieval-maturity is shipped (2026-04-29).** The next concrete
 step is **0.6.0 — push** (~12 weeks FTE):
@@ -154,12 +154,13 @@ with the milestone they unlock.
 - Recommended production build: **`zig build -Doptimize=ReleaseSafe`**
   (~6 MB, safety checks on). `ReleaseSmall` (~1.4 MB) is flagged for
   the upcoming embedded + in-browser work.
-- Docs are split: `README.md` (overview + TL;DR), `USAGE.md`
-  (cookbook), `ARCHITECTURE.md` (model + threading + accounting wall),
-  `PLAN.md` (multi-phase roadmap), `STATUS.md` (this file —
-  operational snapshot, the most-likely-to-be-stale).
+- Docs are split: `README.md` at root (overview + TL;DR), and under
+  `docs/`: `usage.md` (cookbook), `architecture.md` (model + threading +
+  accounting wall), `plan.md` (multi-phase roadmap), `status.md` (this
+  file — operational snapshot, the most-likely-to-be-stale), and
+  `release-notes/0.X.md` per release.
 - Commit style: subject + body explaining the *why*, not just the
-  *what*. Co-authored-by Claude line OK.
+  *what*.
 
 > zigbee dials any TCP-reachable bee → completes Noise XX → opens Yamux →
 > serves libp2p Identify, Ping → completes the bee `/swarm/handshake/14.0.0`

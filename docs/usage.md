@@ -1,7 +1,7 @@
 # zigbee — usage walkthroughs
 
 Real, copy-pasteable command sequences. If anything is unclear, the
-single-page mental model lives in [`ARCHITECTURE.md`](ARCHITECTURE.md).
+single-page mental model lives in [`architecture.md`](architecture.md).
 
 For each scenario the steps are: **(1) start zigbee** → **(2) wait for
 peers** → **(3) request the file**. None of these needs you to know
