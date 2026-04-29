@@ -76,6 +76,15 @@ zig build test --summary all   # expect: 113/113 tests passed
   `serveApi` loop + dialer-thread join, so bee no longer logs
   "broadcast failed" when we exit.
   ([0.4.2 release notes](release-notes/0.4.2.md))
+- **0.5.1** *(tagged 2026-04-29)* — **`--bootnode` flag.** Accepts
+  `/dnsaddr/<host>` or `/ip4/.../tcp/.../p2p/...` multiaddrs, mirrors
+  bee's `testnet.yaml` `bootnode:` field. zigbee resolves DNS internally,
+  walks candidates in order on initial dial, falls through on failure.
+  `--peer` keeps its precise meaning (dial *this exact peer*) and is
+  mutually exclusive with `--bootnode`. 6 new unit tests; total 113/113.
+  Also shipped: `examples/install-kit/` — generalised onboarding scripts
+  paired with `docs/install.html`. See
+  [`release-notes/0.5.1.md`](release-notes/0.5.1.md).
 - **0.5.0** *(tagged 2026-04-29)* — **retrieval-maturity.** Three
   sub-items shipped together; full prose in
   [`release-notes/0.5.0.md`](release-notes/0.5.0.md):
@@ -157,8 +166,9 @@ with the milestone they unlock.
 - Docs are split: `README.md` at root (overview + TL;DR), and under
   `docs/`: `usage.md` (cookbook), `architecture.md` (model + threading +
   accounting wall), `plan.md` (multi-phase roadmap), `status.md` (this
-  file — operational snapshot, the most-likely-to-be-stale), and
-  `release-notes/0.X.md` per release.
+  file — operational snapshot, the most-likely-to-be-stale),
+  `install.html` (noob-friendly first-run guide paired with
+  `examples/install-kit/`), and `release-notes/0.X.md` per release.
 - Commit style: subject + body explaining the *why*, not just the
   *what*.
 
@@ -279,8 +289,11 @@ zig build
 # Discover entry points (optional — any raw-TCP /ip4/.../tcp/... works):
 ./zig-out/bin/zigbee resolve sepolia.testnet.ethswarm.org
 
-# Run daemon on a public bootnode; auto-dials up to 4 peers via hive.
-./zig-out/bin/zigbee --peer 167.235.96.31:32491 --network-id 10 \
+# Run daemon on a public bootnode (0.5.1 — `--bootnode` resolves
+# /dnsaddr/ via DNS-TXT, walks candidates in order, falls through on
+# dial failure). Auto-dials up to 4 peers via hive.
+./zig-out/bin/zigbee --bootnode /dnsaddr/sepolia.testnet.ethswarm.org \
+                    --network-id 10 \
                     daemon --max-peers 4 --api-port 9090 &
 
 # Wait ~15-30s for fan-out, then:
