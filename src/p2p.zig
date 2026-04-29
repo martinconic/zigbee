@@ -18,6 +18,7 @@ const mantaray = @import("mantaray.zig");
 const bmt = @import("bmt.zig");
 const connection_mod = @import("connection.zig");
 const Connection = connection_mod.Connection;
+const store_mod = @import("store.zig");
 const net = std.net;
 
 /// libp2p protocols this node speaks. Advertised in Identify and accepted on
@@ -89,6 +90,10 @@ pub const P2PNode = struct {
     /// accept thread) can write here concurrently, and the dialer reads.
     peers_mtx: std.Thread.Mutex = .{},
 
+    /// Local chunk store (0.5a). Null = caching disabled. Owned by the
+    /// caller (passed in via init); deinit's it on P2PNode.deinit.
+    store: ?*store_mod.Store = null,
+
     pub fn init(
         allocator: std.mem.Allocator,
         id: identity.Identity,
@@ -99,6 +104,9 @@ pub const P2PNode = struct {
         /// overlay changes every restart and bee's per-peer
         /// accounting state resets.
         nonce: [bzz_address.NONCE_LEN]u8,
+        /// Optional local chunk store. Pass null to disable caching.
+        /// Ownership transfers — deinit'd on P2PNode.deinit.
+        store: ?*store_mod.Store,
     ) !P2PNode {
         var overlay: [bzz_address.OVERLAY_LEN]u8 = undefined;
         id.overlayAddress(network_id, nonce, &overlay);
@@ -109,6 +117,7 @@ pub const P2PNode = struct {
             .nonce = nonce,
             .overlay = overlay,
             .peers = peer_table.PeerTable.init(allocator, overlay),
+            .store = store,
         };
     }
 
@@ -119,6 +128,7 @@ pub const P2PNode = struct {
         self.connections_mtx.unlock();
         self.peers.deinit();
         self.hive_candidate_overlays.deinit(self.allocator);
+        if (self.store) |s| s.deinit();
     }
 
     /// Adds a peer-overlay to the "candidates to dial" queue. Called from
@@ -286,16 +296,53 @@ pub const P2PNode = struct {
     /// Per-attempt timeout matching bee's RetrieveChunkTimeout.
     pub const PER_ATTEMPT_TIMEOUT_NS: u64 = 30 * std.time.ns_per_s;
 
-    /// Retrieves a single chunk by address using forwarding-Kademlia origin
-    /// retries. Iterates connected peers in XOR-asc order; on PeerError /
-    /// stream-reset / per-attempt timeout (30 s), falls through to the next
-    /// peer. This is the spec §1.5 "next peer candidate" behaviour and the
-    /// zigbee equivalent of bee's `errorsLeft = maxOriginErrors`.
+    /// Retrieves a single chunk by address.
+    ///
+    /// 1. **Cache lookup** (0.5a): if a local store is configured and
+    ///    holds `addr`, return immediately. The cache hit reuses the
+    ///    bytes we wrote on a previous fetch — no network round-trip,
+    ///    no SWAP cost, no retrieval-timeout exposure.
+    /// 2. **Network fetch** (forwarding-Kademlia origin retries):
+    ///    iterate connected peers in XOR-asc order; on PeerError /
+    ///    stream-reset / per-attempt timeout (30 s), fall through to
+    ///    the next peer. This is the spec §1.5 "next peer candidate"
+    ///    behaviour and the zigbee equivalent of bee's
+    ///    `errorsLeft = maxOriginErrors`.
+    /// 3. **Cache write-back** (0.5a): on a successful network fetch,
+    ///    insert the bytes into the local store. Best-effort — a put
+    ///    failure is logged but never fails the request.
+    ///
     /// Returns a heap-allocated `RetrievedChunk`. Caller calls `.deinit()`.
     pub fn retrieveChunkIterating(
         self: *P2PNode,
         addr: [bmt.HASH_SIZE]u8,
     ) !retrieval.RetrievedChunk {
+        // Cache lookup.
+        if (self.store) |s| {
+            const cached = s.get(addr) catch |e| blk: {
+                std.debug.print("[store] get failed for {s}: {any}\n", .{
+                    std.fmt.bytesToHex(addr, .lower), e,
+                });
+                break :blk null;
+            };
+            if (cached) |c| {
+                // Convert to RetrievedChunk shape, transferring ownership
+                // of `c.data`. We don't track a stamp here — cached chunks
+                // are emitted without one (callers don't currently look at
+                // it on the read path). The empty stamp slice still has
+                // to be allocator-owned so RetrievedChunk.deinit can
+                // free it uniformly with network-fetched chunks.
+                const empty_stamp = try self.allocator.alloc(u8, 0);
+                return retrieval.RetrievedChunk{
+                    .data = c.data,
+                    .span = c.span,
+                    .address = addr,
+                    .stamp = empty_stamp,
+                    ._allocator = self.allocator,
+                };
+            }
+        }
+
         const candidates = try self.connectionsSortedByDistance(self.allocator, addr);
         defer self.allocator.free(candidates);
         if (candidates.len == 0) return error.NoConnectedPeers;
@@ -312,6 +359,16 @@ pub const P2PNode = struct {
                 .{ i + 1, candidates.len, std.fmt.bytesToHex(conn.peer_overlay, .lower) },
             );
             if (tryRetrieveOnceWithTimeout(self.allocator, conn, addr, PER_ATTEMPT_TIMEOUT_NS)) |rc| {
+                // Cache write-back: best-effort. A failure here (full
+                // disk, permission denied, …) shouldn't fail the
+                // retrieval that already succeeded.
+                if (self.store) |s| {
+                    s.put(addr, rc.span, rc.data) catch |e| {
+                        std.debug.print("[store] put failed for {s}: {any}\n", .{
+                            std.fmt.bytesToHex(addr, .lower), e,
+                        });
+                    };
+                }
                 return rc;
             } else |e| {
                 last_err = e;

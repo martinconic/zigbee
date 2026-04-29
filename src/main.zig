@@ -4,6 +4,12 @@ const bmt = @import("bmt.zig");
 const identity = @import("identity.zig");
 const p2p = @import("p2p.zig");
 const dnsaddr = @import("dnsaddr.zig");
+const store_mod = @import("store.zig");
+
+/// Default local-store cap. 100 MiB ≈ 25 000 chunks at 4 KiB each;
+/// fits a Pi Zero comfortably and is tunable down for ESP32-class
+/// devices (cross-cutting item X1 in `docs/iot-roadmap.html`).
+const DEFAULT_STORE_MAX_BYTES: u64 = 100 * 1024 * 1024;
 
 // CLI usage:
 //
@@ -42,6 +48,13 @@ const Args = struct {
     /// magic value `:ephemeral:` means "don't persist; generate fresh
     /// each run" (the pre-0.4.1 behaviour, useful for testing).
     identity_file: ?[]const u8 = null,
+    /// Path to the local chunk-store directory (0.5a). null → default
+    /// `$HOME/.zigbee/store/`.
+    store_path: ?[]const u8 = null,
+    /// Cap on the local chunk store, in bytes (0.5a).
+    store_max_bytes: u64 = DEFAULT_STORE_MAX_BYTES,
+    /// Disable the local chunk store entirely (0.5a).
+    no_store: bool = false,
 };
 
 fn parseArgs(argv: []const []const u8) !Args {
@@ -77,6 +90,16 @@ fn parseArgs(argv: []const []const u8) !Args {
             i += 1;
             if (i >= argv.len) return error.MissingValue;
             a.max_peers = try std.fmt.parseInt(usize, argv[i], 10);
+        } else if (std.mem.eql(u8, arg, "--store-path")) {
+            i += 1;
+            if (i >= argv.len) return error.MissingValue;
+            a.store_path = argv[i];
+        } else if (std.mem.eql(u8, arg, "--store-max-bytes")) {
+            i += 1;
+            if (i >= argv.len) return error.MissingValue;
+            a.store_max_bytes = try std.fmt.parseInt(u64, argv[i], 10);
+        } else if (std.mem.eql(u8, arg, "--no-store")) {
+            a.no_store = true;
         } else if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
             return error.HelpRequested;
         } else if (positional_idx == 0) {
@@ -123,6 +146,16 @@ fn printHelp() void {
         \\                      Pass ":ephemeral:" to generate fresh
         \\                      each run (the pre-0.4.1 behaviour, for
         \\                      tests).
+        \\  --store-path P      path to the local chunk-store directory
+        \\                      (default $HOME/.zigbee/store/). Files
+        \\                      are <root>/<2-hex-prefix>/<64-hex-addr>
+        \\                      with `span(8 LE) ‖ payload` payload —
+        \\                      same shape bee returns from /chunks/<addr>.
+        \\  --store-max-bytes N cap the local store at N bytes (default
+        \\                      100 MiB). Eviction is LRU. Bumping a hit
+        \\                      to MRU happens on every successful get.
+        \\  --no-store          disable the local chunk store entirely;
+        \\                      every retrieval hits the network.
         \\
         \\subcommands:
         \\  (none)              dial the peer, do the handshake, stay connected
@@ -202,6 +235,24 @@ pub fn main() !void {
     var nonce: [32]u8 = undefined;
     const id = try resolveIdentity(allocator, args.identity_file, &nonce);
 
+    // Local chunk store (0.5a). Opened before P2PNode.init so a
+    // failure here (permission denied, disk full, corrupted index)
+    // surfaces before we waste a TCP handshake.
+    const store_ptr: ?*store_mod.Store = blk: {
+        if (args.no_store) {
+            std.debug.print("[store] --no-store: caching disabled\n", .{});
+            break :blk null;
+        }
+        const path = if (args.store_path) |p|
+            try allocator.dupe(u8, p)
+        else
+            try store_mod.defaultStorePath(allocator);
+        defer allocator.free(path);
+
+        std.debug.print("[store] root={s} max_bytes={d}\n", .{ path, args.store_max_bytes });
+        break :blk try store_mod.Store.openOrCreate(allocator, path, args.store_max_bytes);
+    };
+
     var action: p2p.PostHandshakeAction = .none;
     if (args.subcommand == .retrieve) {
         if (args.positional.len != 64) {
@@ -213,7 +264,7 @@ pub fn main() !void {
         action = .{ .retrieve = .{ .address = addr_bytes, .out_path = args.out_path } };
     }
 
-    var node = try p2p.P2PNode.init(allocator, id, args.network_id, nonce);
+    var node = try p2p.P2PNode.init(allocator, id, args.network_id, nonce, store_ptr);
     defer node.deinit();
 
     std.debug.print("Node Overlay Address: {s}\n", .{std.fmt.bytesToHex(node.overlay, .lower)});
@@ -323,4 +374,5 @@ test {
     _ = @import("connection.zig");
     _ = @import("proto.zig");
     _ = @import("yamux.zig");
+    _ = @import("store.zig");
 }

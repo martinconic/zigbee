@@ -1,12 +1,12 @@
 # zigbee — operational status snapshot
 
-**Release:** 0.4.2 — operational polish: handshake-print cleanup + `/pingpong/<peer>` HTTP + graceful shutdown ([release notes](RELEASE_NOTES_0.4.2.md), preceded by [0.4.1](RELEASE_NOTES_0.4.1.md) and [0.4](RELEASE_NOTES_0.4.md))
+**Release:** 0.4.2 (tagged) — operational polish: handshake-print cleanup + `/pingpong/<peer>` HTTP + graceful shutdown ([0.4.2 release notes](RELEASE_NOTES_0.4.2.md), preceded by [0.4.1](RELEASE_NOTES_0.4.1.md) and [0.4](RELEASE_NOTES_0.4.md))
+**In progress on `main` (0.5.0 milestone):** 0.5a local flat-file chunk store **landed** (see [in-progress 0.5.0 release notes](RELEASE_NOTES_0.5.0.md)); 0.5b encrypted-chunk refs + 0.5c SWAP cheques still to ship before tagging 0.5.0.
 **Headline focus:** **IoT / embedded.** zigbee is the small-footprint Bee client family for devices that can't run Go bee. Locked in 2026-04-28; framing detail in [`docs/iot-roadmap.html`](docs/iot-roadmap.html).
-**Next milestone:** 0.5.0 — retrieval-maturity (local store + encrypted refs + SWAP cheques, issue-only, ~10 work-weeks FTE).
 **Strategy references:** [`docs/iot-roadmap.html`](docs/iot-roadmap.html) (IoT-specific roadmap) + [`docs/strategy.html`](docs/strategy.html) (full strategic dossier)
 **Date last refreshed:** 2026-04-29
-**Tests:** 74/74 unit tests pass (`zig build test --summary all`)
-**Source size:** ~8,840 lines of Zig across 28 files in `zigbee/src/`
+**Tests:** 80/80 unit tests pass (`zig build test --summary all`)
+**Source size:** ~9,300 lines of Zig across 29 files in `zigbee/src/` (added `src/store.zig`)
 **Repository:** https://github.com/martinconic/zigbee (public, BSD-3-Clause)
 **Live status against bee:** verified end-to-end against a local bee
 (`bee/v2.7.2-rc1`, sepolia testnet config) and against the public
@@ -27,7 +27,7 @@ first.
 | **Repo (local)** | `/home/calin/work/swarm/bee-clients/zigbee` |
 | **Repo (GitHub)** | https://github.com/martinconic/zigbee |
 | **Default branch** | `main` (in sync with `origin/main`) |
-| **Latest tag** | `v0.4.2` (next; 0.4.1 was the prior release) |
+| **Latest tag** | `v0.4.2` (0.5.0 in progress on `main`) |
 | **Bee source we cross-reference** | `/home/calin/work/swarm/dev/bee` (Go) |
 | **Spec PDFs** | `/home/calin/work/swarm/bee-clients/docs/{swarm_protocol_spec.pdf, the-book-of-swarm-2.pdf}` |
 | **Local bee binary** | `/tmp/bee` (testnet config: `/home/calin/work/swarm/bee-clients/testnet.yaml`) |
@@ -37,7 +37,7 @@ first.
 
 ```bash
 cd /home/calin/work/swarm/bee-clients/zigbee
-zig build test --summary all   # expect: 74/74 tests passed
+zig build test --summary all   # expect: 80/80 tests passed
 ```
 
 ### What's done (per-release)
@@ -73,6 +73,18 @@ zig build test --summary all   # expect: 74/74 tests passed
   `serveApi` loop + dialer-thread join, so bee no longer logs
   "broadcast failed" when we exit.
   ([RELEASE_NOTES_0.4.2.md](RELEASE_NOTES_0.4.2.md))
+- **0.5a** *(landed on `main`; 0.5.0 not yet tagged)* — local
+  flat-file chunk store with basic LRU. New `src/store.zig`
+  (~470 lines) with atomic write (tempfile + fsync + rename),
+  in-memory hashmap + DLL LRU under one mutex, startup scan
+  rebuilds the index from file mtimes, evicts down to cap on
+  shrink. Wired into `retrieveChunkIterating`: cache lookup
+  first → network fetch on miss → best-effort write-back on
+  success. CLI: `--store-path P`, `--store-max-bytes N`
+  (default 100 MiB), `--no-store`. Six unit tests (round-trip,
+  miss, over-cap eviction, MRU-on-hit, restart-resume,
+  shrunken-cap-evict-down-to). ([in-progress 0.5.0 release
+  notes](RELEASE_NOTES_0.5.0.md))
 
 ### What's open / pending (development plan locked in 2026-04-28)
 
@@ -160,7 +172,7 @@ Zigbee is an **ultra-light Swarm client** — even lighter than bee's `light: tr
 | Maintains multiple direct peer connections | ✅ (auto-dialer + manage tick) |
 | Retrieves chunks (single + chunk-tree files) | ✅ via spec §1.5 origin-retry + bee's forwarding-Kademlia |
 | Validates content-addressed chunks (CAC) | ✅ BMT + span |
-| Local chunk store / reserve | ❌ (we never store) |
+| Local chunk store (read cache) | ✅ added in 0.5a — flat-file LRU at `~/.zigbee/store/`, default 100 MiB, atomic write |
 | Retrieval *responder* | ❌ (no chunks to serve) |
 | Push (uploads) | ❌ (needs postage stamps + chain integration) |
 | Pullsync, redistribution | ❌ |
@@ -215,8 +227,9 @@ bee peers zigbee is connected to.
 | `src/mantaray.zig` | **Mantaray manifest walker.** v0.1/v0.2 binary trie decoder: 64-byte header (32 obfuscation key + 31 version hash + 1 refSize), XOR de-obfuscation, fork iteration with metadata-on-fork JSON decoding. `lookup` matches bee's `LookupNode` semantics (always recurses through forks). `resolveDefaultFile` implements bee's `bzz.go` flow (root `"/"`-fork `website-index-document` metadata → look up that suffix → return entry). Allows `ref_bytes_size = 0` for terminal metadata-only nodes | ✓ unit + live (`/bzz/<manifest-ref>` byte-identical to `bee /bzz/<ref>/`) |
 | `src/connection.zig` | Heap-allocated `Connection` owns TCP + NoiseStream + YamuxSession; `dial()` runs the full upstream stack; `startAcceptLoop()` spawns a per-connection accept thread with caller-provided dispatcher; `openStream()` for outbound; **`dead: atomic.Value(bool)` set when the accept loop exits (any reason)** — feeds the manage-tick reaper | live |
 | `src/p2p.zig` | The host: dial path, multi-peer connection list, hive-fed auto-dialer with retry-with-backoff and a 15 s manage tick that **prunes dead connections** then re-queues unconnected peers, XOR-asc retrieval iteration (skips dead conns), **30 s per-attempt watchdog**, HTTP API (`/retrieve`, `/bzz`, `/peers`) | live |
-| `src/main.zig` | CLI — `zigbee [resolve|retrieve|daemon]` | — |
+| `src/main.zig` | CLI — `zigbee [resolve|retrieve|daemon]`; **0.5a:** `--store-path`, `--store-max-bytes`, `--no-store` | — |
 | `src/p2p.zig` (0.4.2 additions) | `POST /pingpong/<overlay>` route + `formatGoDuration` helper + `g_shutdown` atomic + SIGINT/SIGTERM handler + poll-gated `serveApi` + joinable dialer thread | ✓ unit (`formatGoDuration` golden samples) |
+| `src/store.zig` (0.5a) | Local flat-file chunk store with basic LRU. `<root>/<2-hex>/<64-hex>` layout, atomic write (tempfile + fsync + rename), hashmap + DLL index under one mutex, startup scan rebuilds index from file mtimes. `Store.openOrCreate` / `get` / `put` / `deinit`. | ✓ 6 unit tests (round-trip, miss, eviction, MRU-on-hit, restart-resume, shrunken-cap) |
 | `src/root.zig` | Module entry point | — |
 
 ---

@@ -526,10 +526,10 @@ Phase status lives in this file. Update the table when a phase enters
 | 0.4.2c — graceful shutdown on SIGINT/SIGTERM | done | Module-level `g_shutdown: std.atomic.Value(bool)` + `std.posix.sigaction` handler (does only the atomic store — async-signal-safe). `serveApi` wraps accept in `std.posix.poll(.., 200ms)` to re-check the flag. Hive dialer checks at top of every iteration. `daemonRun` keeps a joinable handle to the dialer thread and joins it after `serveApi` returns; existing `defer node.deinit()` then closes every live `Connection` cleanly. Bee no longer logs "broadcast failed" on our exit. |
 |  | | |
 | **0.5.0 — retrieval-maturity** | | **Read-side feature complete; estimate ~10 work-weeks FTE** |
-| 0.5a — Local flat-file chunk store (basic LRU) | not started | `~/.zigbee/store/<hex_first_2>/<hex>` with atomic write. Foundation for 0.6 staging; useful in 0.5 as retrieval cache. ~1 week. |
+| 0.5a — Local flat-file chunk store (basic LRU) | **done — landed on `main`** ✅ | `~/.zigbee/store/<2-hex>/<64-hex>` with atomic write. New `src/store.zig` (~470 lines incl. tests). Wired into `retrieveChunkIterating`: cache-first lookup, best-effort write-back on miss. CLI: `--store-path`, `--store-max-bytes` (default 100 MiB), `--no-store`. 6 unit tests. See [in-progress 0.5.0 release notes](RELEASE_NOTES_0.5.0.md). |
 | 0.5b — Encrypted-chunk references (`refLength = 64`) | not started | Refs carry 32B addr ‖ 32B sym key. Joiner + mantaray walker honour 64-byte refs and decrypt payloads with the per-ref key. ~2 weeks. |
 | 0.5c — SWAP cheques (issue-only, no on-chain cashing) | not started | **The headline of 0.5.** `/swarm/swap/1.0.0/swap` protocol; we issue cheques to bee peers when our cumulative debt crosses bee's announced threshold. Receive cheques but defer cashing on-chain to 1.0. Unblocks unlimited retrieval per peer. ~4–5 weeks. |
-| 0.5.0 release | not started | RELEASE_NOTES_0.5.md, version bump, tag, GitHub release. |
+| 0.5.0 release | not started | RELEASE_NOTES_0.5.0.md, version bump, tag, GitHub release. |
 |  | | |
 | **0.6.0 — push** | | **Read-write parity at the wire level; ~12 weeks FTE** |
 | 0.6 — design context | — | **Protocol-only push, no on-chain code in zigbee proper.** Users provide a postage *batch credential* (`{batch_id, signing_key, depth, bucket_depth, valid_until}`) acquired by some other tool — bee, a stamp service, a wallet. zigbee uses the credential to *issue* stamps for chunks it pushes. See [`docs/strategy.html` §7](docs/strategy.html#sec-esp32) for the full breakdown. |
