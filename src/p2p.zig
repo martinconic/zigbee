@@ -1,4 +1,5 @@
 const std = @import("std");
+const io_mod = @import("io.zig");
 const identity = @import("identity.zig");
 const noise = @import("noise.zig");
 const yamux = @import("yamux.zig");
@@ -24,7 +25,7 @@ const cheque_mod = @import("cheque.zig");
 const swap_mod = @import("swap.zig");
 const accounting_mod = @import("accounting.zig");
 const credential_mod = @import("credential.zig");
-const net = std.net;
+const tcp_mod = @import("tcp.zig");
 
 /// libp2p protocols this node speaks. Advertised in Identify and accepted on
 /// inbound streams.
@@ -46,7 +47,7 @@ const SUPPORTED_PROTOCOLS = [_][]const u8{
 /// bee emits when our process-exit RST drops the TCP session abruptly.
 var g_shutdown: std.atomic.Value(bool) = std.atomic.Value(bool).init(false);
 
-fn handleShutdownSignal(_: c_int) callconv(.c) void {
+fn handleShutdownSignal(_: std.posix.SIG) callconv(.c) void {
     g_shutdown.store(true, .release);
 }
 
@@ -88,17 +89,17 @@ pub const P2PNode = struct {
     peers: peer_table.PeerTable,
 
     /// Active outbound connections. Owned (each pointer is heap-allocated).
-    connections: std.ArrayList(*Connection) = .{},
-    connections_mtx: std.Thread.Mutex = .{},
+    connections: std.ArrayList(*Connection) = .empty,
+    connections_mtx: std.Io.Mutex = .init,
 
     /// In daemon mode, hive broadcasts go through this channel so the
     /// daemon worker can dial new peers as candidates arrive.
-    hive_candidate_overlays: std.ArrayList([bzz_address.OVERLAY_LEN]u8) = .{},
-    hive_mtx: std.Thread.Mutex = .{},
+    hive_candidate_overlays: std.ArrayList([bzz_address.OVERLAY_LEN]u8) = .empty,
+    hive_mtx: std.Io.Mutex = .init,
 
     /// Guards `peers`. Multiple inbound hive responders (one per Connection
     /// accept thread) can write here concurrently, and the dialer reads.
-    peers_mtx: std.Thread.Mutex = .{},
+    peers_mtx: std.Io.Mutex = .init,
 
     /// Local chunk store (0.5a). Null = caching disabled. Owned by the
     /// caller (passed in via init); deinit's it on P2PNode.deinit.
@@ -150,10 +151,10 @@ pub const P2PNode = struct {
     }
 
     pub fn deinit(self: *P2PNode) void {
-        self.connections_mtx.lock();
+        self.connections_mtx.lockUncancelable(io_mod.get());
         for (self.connections.items) |c| c.deinit();
         self.connections.deinit(self.allocator);
-        self.connections_mtx.unlock();
+        self.connections_mtx.unlock(io_mod.get());
         self.peers.deinit();
         self.hive_candidate_overlays.deinit(self.allocator);
         if (self.store) |s| s.deinit();
@@ -163,14 +164,14 @@ pub const P2PNode = struct {
     /// Adds a peer-overlay to the "candidates to dial" queue. Called from
     /// the hive responder; daemon mode picks these off in a worker.
     pub fn enqueueHiveCandidate(self: *P2PNode, overlay: [bzz_address.OVERLAY_LEN]u8) !void {
-        self.hive_mtx.lock();
-        defer self.hive_mtx.unlock();
+        self.hive_mtx.lockUncancelable(io_mod.get());
+        defer self.hive_mtx.unlock(io_mod.get());
         try self.hive_candidate_overlays.append(self.allocator, overlay);
     }
 
     pub fn dequeueHiveCandidate(self: *P2PNode) ?[bzz_address.OVERLAY_LEN]u8 {
-        self.hive_mtx.lock();
-        defer self.hive_mtx.unlock();
+        self.hive_mtx.lockUncancelable(io_mod.get());
+        defer self.hive_mtx.unlock(io_mod.get());
         if (self.hive_candidate_overlays.items.len == 0) return null;
         return self.hive_candidate_overlays.orderedRemove(0);
     }
@@ -178,8 +179,8 @@ pub const P2PNode = struct {
     /// Adds a connection to the host's list. Spawns its accept loop with
     /// the per-stream dispatcher.
     fn registerConnection(self: *P2PNode, conn: *Connection) !void {
-        self.connections_mtx.lock();
-        defer self.connections_mtx.unlock();
+        self.connections_mtx.lockUncancelable(io_mod.get());
+        defer self.connections_mtx.unlock(io_mod.get());
         try self.connections.append(self.allocator, conn);
         try conn.startAcceptLoop(@ptrCast(self), &dispatchInboundStream);
     }
@@ -189,8 +190,8 @@ pub const P2PNode = struct {
     /// exited (`isDead()`) — those will be reaped by the next manage tick.
     /// Returns null if there are no live connections.
     pub fn closestConnectionTo(self: *P2PNode, target: [bzz_address.OVERLAY_LEN]u8) ?*Connection {
-        self.connections_mtx.lock();
-        defer self.connections_mtx.unlock();
+        self.connections_mtx.lockUncancelable(io_mod.get());
+        defer self.connections_mtx.unlock(io_mod.get());
         if (self.connections.items.len == 0) return null;
 
         var best: ?*Connection = null;
@@ -217,8 +218,8 @@ pub const P2PNode = struct {
         allocator: std.mem.Allocator,
         target: [bzz_address.OVERLAY_LEN]u8,
     ) ![]*Connection {
-        self.connections_mtx.lock();
-        defer self.connections_mtx.unlock();
+        self.connections_mtx.lockUncancelable(io_mod.get());
+        defer self.connections_mtx.unlock(io_mod.get());
 
         // First pass: count live connections so we can allocate the
         // exact slice (instead of allocating items.len and shrinking).
@@ -254,8 +255,8 @@ pub const P2PNode = struct {
     /// whether to look for new peers — counting dead conns would
     /// make the dialer think we're full and never re-fill.
     pub fn connectionCount(self: *P2PNode) usize {
-        self.connections_mtx.lock();
-        defer self.connections_mtx.unlock();
+        self.connections_mtx.lockUncancelable(io_mod.get());
+        defer self.connections_mtx.unlock(io_mod.get());
         var n: usize = 0;
         for (self.connections.items) |c| {
             if (!c.isDead()) n += 1;
@@ -264,8 +265,8 @@ pub const P2PNode = struct {
     }
 
     pub fn isConnectedToOverlay(self: *P2PNode, overlay: [bzz_address.OVERLAY_LEN]u8) bool {
-        self.connections_mtx.lock();
-        defer self.connections_mtx.unlock();
+        self.connections_mtx.lockUncancelable(io_mod.get());
+        defer self.connections_mtx.unlock(io_mod.get());
         for (self.connections.items) |c| {
             if (std.mem.eql(u8, &c.peer_overlay, &overlay)) return true;
         }
@@ -273,10 +274,10 @@ pub const P2PNode = struct {
     }
 
     pub fn peersLock(self: *P2PNode) void {
-        self.peers_mtx.lock();
+        self.peers_mtx.lockUncancelable(io_mod.get());
     }
     pub fn peersUnlock(self: *P2PNode) void {
-        self.peers_mtx.unlock();
+        self.peers_mtx.unlock(io_mod.get());
     }
 
     /// Walk `connections`, remove any whose accept-thread has exited
@@ -293,10 +294,10 @@ pub const P2PNode = struct {
     pub fn pruneDeadConnections(self: *P2PNode) !void {
         // Phase 1: under the lock, identify dead connections and
         // detach them from the tracking list.
-        var to_deinit = std.ArrayList(*Connection){};
+        var to_deinit = std.ArrayList(*Connection).empty;
         defer to_deinit.deinit(self.allocator);
 
-        self.connections_mtx.lock();
+        self.connections_mtx.lockUncancelable(io_mod.get());
         var i: usize = 0;
         while (i < self.connections.items.len) {
             const c = self.connections.items[i];
@@ -309,7 +310,7 @@ pub const P2PNode = struct {
                 i += 1;
             }
         }
-        self.connections_mtx.unlock();
+        self.connections_mtx.unlock(io_mod.get());
 
         // Phase 2: deinit outside the lock. Each `c.deinit()` joins
         // the (already-exited) accept thread + the yamux reader.
@@ -534,7 +535,7 @@ pub const P2PNode = struct {
             .none => {
                 // Idle: park here while inbound streams are processed by
                 // conn.accept_thread. Sleep on a flag.
-                while (true) std.Thread.sleep(60 * std.time.ns_per_s);
+                while (true) io_mod.sleepNs(60 * std.time.ns_per_s);
             },
         }
     }
@@ -636,32 +637,38 @@ pub const P2PNode = struct {
 //     in `pkg/retrieval/retrieval.go`.
 
 const Watchdog = struct {
-    mtx: std.Thread.Mutex = .{},
-    cond: std.Thread.Condition = .{},
-    done: bool = false,
+    // 0.16's Io.Condition has no timed wait, so we use an Io.Event:
+    // signalDone() sets it; run() waits on it until a deadline. waitTimeout
+    // can wake spuriously, so we loop and only fire once the deadline has
+    // genuinely passed and the event is still unset.
+    done_event: std.Io.Event = .unset,
     fired: bool = false,
     stream: *yamux.Stream,
     timeout_ns: u64,
 
     fn run(self: *Watchdog) void {
-        self.mtx.lock();
-        defer self.mtx.unlock();
-        if (self.done) return;
-        self.cond.timedWait(&self.mtx, self.timeout_ns) catch {
-            // timedWait returned error.Timeout: the retrieval hasn't
-            // finished. Force the stream down.
-            if (!self.done) {
-                self.fired = true;
-                self.stream.cancel();
-            }
-        };
+        const io = io_mod.get();
+        const deadline = std.Io.Timestamp.now(io, .awake)
+            .addDuration(std.Io.Duration.fromNanoseconds(self.timeout_ns))
+            .withClock(.awake);
+        while (!self.done_event.isSet()) {
+            self.done_event.waitTimeout(io, .{ .deadline = deadline }) catch {
+                // error.Timeout: deadline reached or a spurious wakeup.
+                if (self.done_event.isSet()) return; // retrieval finished
+                if (std.Io.Timestamp.now(io, .awake).nanoseconds >= deadline.raw.nanoseconds) {
+                    // Deadline truly passed and retrieval hasn't finished:
+                    // force the stream down so the in-flight read unblocks.
+                    self.fired = true;
+                    self.stream.cancel();
+                    return;
+                }
+                // spurious wakeup before the deadline — wait again
+            };
+        }
     }
 
     fn signalDone(self: *Watchdog) void {
-        self.mtx.lock();
-        self.done = true;
-        self.mtx.unlock();
-        self.cond.signal();
+        self.done_event.set(io_mod.get());
     }
 };
 
@@ -739,9 +746,10 @@ fn runRetrievalAgainst(
     } else rc.data;
 
     if (out_path) |p| {
-        const f = try std.fs.cwd().createFile(p, .{});
-        defer f.close();
-        try f.writeAll(data_to_write);
+        const io = io_mod.get();
+        const f = try std.Io.Dir.cwd().createFile(io, p, .{});
+        defer f.close(io);
+        try f.writeStreamingAll(io, data_to_write);
         std.debug.print("[retrieve] wrote {d} bytes to {s}\n", .{ data_to_write.len, p });
     } else {
         std.debug.print("[retrieve] data (hex): ", .{});
@@ -883,7 +891,7 @@ fn runHiveDialerInner(ctx: *DialerCtx) !void {
         //      a quiet hive doesn't leave us stranded with candidates
         //      we never got around to trying. Bee's discovery does
         //      the analogous thing in its kademlia manage loop.
-        const now = std.time.nanoTimestamp();
+        const now = io_mod.nowNs();
         if (now - last_manage_tick > @as(i128, MANAGE_TICK_NS)) {
             last_manage_tick = now;
             ctx.node.pruneDeadConnections() catch {};
@@ -895,12 +903,12 @@ fn runHiveDialerInner(ctx: *DialerCtx) !void {
         // filters dead connections, so the prune above will have
         // brought the count down if there were any dead.)
         if (ctx.node.connectionCount() >= ctx.max_peers) {
-            std.Thread.sleep(2 * std.time.ns_per_s);
+            io_mod.sleepNs(2 * std.time.ns_per_s);
             continue;
         }
 
         const candidate = ctx.node.dequeueHiveCandidate() orelse {
-            std.Thread.sleep(500 * std.time.ns_per_ms);
+            io_mod.sleepNs(500 * std.time.ns_per_ms);
             continue;
         };
 
@@ -938,9 +946,13 @@ fn runHiveDialerInner(ctx: *DialerCtx) !void {
             "[dialer] dialing candidate {s} at {d}.{d}.{d}.{d}:{d} (attempt {d}/{d})\n",
             .{
                 std.fmt.bytesToHex(candidate, .lower),
-                ipt.ip[0], ipt.ip[1], ipt.ip[2], ipt.ip[3],
+                ipt.ip[0],
+                ipt.ip[1],
+                ipt.ip[2],
+                ipt.ip[3],
                 ipt.port,
-                st.attempts, MAX_ATTEMPTS_PER_PEER,
+                st.attempts,
+                MAX_ATTEMPTS_PER_PEER,
             },
         );
         const conn = Connection.dial(
@@ -1013,9 +1025,10 @@ fn isPrivateOrLoopback(ip: [4]u8) bool {
 // ---- HTTP API ----
 
 fn serveApi(node: *P2PNode, port: u16) !void {
-    const listen_addr = net.Address.initIp4(.{ 127, 0, 0, 1 }, port);
-    var server = try listen_addr.listen(.{ .reuse_address = true });
-    defer server.deinit();
+    const io = io_mod.get();
+    const listen_addr: std.Io.net.IpAddress = .{ .ip4 = .{ .bytes = .{ 127, 0, 0, 1 }, .port = port } };
+    var server = try listen_addr.listen(io, .{ .reuse_address = true });
+    defer server.deinit(io);
     std.debug.print("[api] listening on 127.0.0.1:{d}\n", .{port});
 
     // Poll the listener with a 200 ms timeout so we re-check the shutdown
@@ -1023,7 +1036,7 @@ fn serveApi(node: *P2PNode, port: u16) !void {
     // gates whether we call it. SIGINT/SIGTERM also interrupts the poll
     // syscall directly with EINTR; we treat that as "go re-check shutdown".
     var pfds = [_]std.posix.pollfd{.{
-        .fd = server.stream.handle,
+        .fd = server.socket.handle,
         .events = std.posix.POLL.IN,
         .revents = 0,
     }};
@@ -1038,18 +1051,28 @@ fn serveApi(node: *P2PNode, port: u16) !void {
         };
         if (ready == 0) continue; // timeout — loop back to shutdown check
 
-        const conn = server.accept() catch |e| {
+        const conn = server.accept(io) catch |e| {
             std.debug.print("[api] accept failed: {any}\n", .{e});
             continue;
         };
-        // Each request runs on its own thread.
-        const ctx = node.allocator.create(ApiCtx) catch {
-            conn.stream.close();
+        // Wrap the accepted socket in a heap TcpStream (stable address: the
+        // handler thread holds a pointer, and the std.Io reader/writer recover
+        // their parent via @fieldParentPtr). handleApi frees it.
+        const tcp = node.allocator.create(tcp_mod.TcpStream) catch {
+            conn.close(io);
             continue;
         };
-        ctx.* = .{ .node = node, .stream = conn.stream };
+        tcp.* = tcp_mod.TcpStream.init(conn);
+        // Each request runs on its own thread.
+        const ctx = node.allocator.create(ApiCtx) catch {
+            tcp.close();
+            node.allocator.destroy(tcp);
+            continue;
+        };
+        ctx.* = .{ .node = node, .stream = tcp };
         const t = std.Thread.spawn(.{}, handleApi, .{ctx}) catch {
-            conn.stream.close();
+            tcp.close();
+            node.allocator.destroy(tcp);
             node.allocator.destroy(ctx);
             continue;
         };
@@ -1060,7 +1083,7 @@ fn serveApi(node: *P2PNode, port: u16) !void {
 
 const ApiCtx = struct {
     node: *P2PNode,
-    stream: net.Stream,
+    stream: *tcp_mod.TcpStream,
 };
 
 // HTTP API surface. All read-only GET endpoints. The bee-compatible ones
@@ -1095,8 +1118,11 @@ const ApiCtx = struct {
 //                                   for back-compat with existing scripts)
 
 fn handleApi(ctx: *ApiCtx) void {
-    defer ctx.stream.close();
+    // Defers run LIFO: close the socket first, then free the heap TcpStream,
+    // then free ctx (read last so the earlier defers can still reach it).
     defer ctx.node.allocator.destroy(ctx);
+    defer ctx.node.allocator.destroy(ctx.stream);
+    defer ctx.stream.close();
 
     var req_buf: [4096]u8 = undefined;
     const n = ctx.stream.read(&req_buf) catch return;
@@ -1125,7 +1151,7 @@ fn handleApi(ctx: *ApiCtx) void {
     writeHttp(ctx.stream, 405, "text/plain", "method not allowed\n") catch {};
 }
 
-fn routePost(node: *P2PNode, stream: net.Stream, path: []const u8) !void {
+fn routePost(node: *P2PNode, stream: *tcp_mod.TcpStream, path: []const u8) !void {
     if (std.mem.startsWith(u8, path, "/pingpong/")) {
         const hex = path[10..];
         const overlay = parseHexAddress(stream, hex) orelse return;
@@ -1134,7 +1160,7 @@ fn routePost(node: *P2PNode, stream: net.Stream, path: []const u8) !void {
     try writeHttp(stream, 404, "text/plain", "unknown path\n");
 }
 
-fn routeGet(node: *P2PNode, stream: net.Stream, path: []const u8) !void {
+fn routeGet(node: *P2PNode, stream: *tcp_mod.TcpStream, path: []const u8) !void {
     // Bee-compatible identity / health
     if (std.mem.eql(u8, path, "/health")) return handleHealth(node, stream);
     if (std.mem.eql(u8, path, "/readiness")) return handleHealth(node, stream);
@@ -1205,7 +1231,7 @@ pub const Ref = struct {
 
 /// Parse a 64-char (CAC) or 128-char (encrypted, addr ‖ key) hex
 /// reference. Writes the HTTP error response and returns null on failure.
-fn parseHexRef(stream: net.Stream, hex: []const u8) ?Ref {
+fn parseHexRef(stream: *tcp_mod.TcpStream, hex: []const u8) ?Ref {
     if (hex.len == 64) {
         var addr: [bmt.HASH_SIZE]u8 = undefined;
         _ = std.fmt.hexToBytes(&addr, hex) catch {
@@ -1232,7 +1258,7 @@ fn parseHexRef(stream: net.Stream, hex: []const u8) ?Ref {
 
 /// 32-byte-only variant for endpoints that take a chunk address rather
 /// than a file reference (`/chunks/<addr>` and `POST /pingpong/<peer>`).
-fn parseHexAddress(stream: net.Stream, hex: []const u8) ?[bmt.HASH_SIZE]u8 {
+fn parseHexAddress(stream: *tcp_mod.TcpStream, hex: []const u8) ?[bmt.HASH_SIZE]u8 {
     if (hex.len != 64) {
         writeHttp(stream, 400, "text/plain", "address must be 64 hex chars\n") catch {};
         return null;
@@ -1247,7 +1273,7 @@ fn parseHexAddress(stream: net.Stream, hex: []const u8) ?[bmt.HASH_SIZE]u8 {
 
 fn handleRetrieveApi(
     node: *P2PNode,
-    stream: net.Stream,
+    stream: *tcp_mod.TcpStream,
     ref: Ref,
 ) !void {
     var rc = node.retrieveChunkIterating(ref.addr) catch |e| {
@@ -1314,13 +1340,13 @@ fn handleRetrieveApi(
 /// `p2p.ErrPeerNotFound` → `jsonhttp.NotFound("peer not found")`).
 fn handlePingpongApi(
     node: *P2PNode,
-    http_stream: net.Stream,
+    http_stream: *tcp_mod.TcpStream,
     overlay: [bzz_address.OVERLAY_LEN]u8,
 ) !void {
     // Find the live connection. Reproduces the same dead-conn filter used
     // by closestConnectionTo / connectionsSortedByDistance / handlePeersBee.
     var conn: ?*Connection = null;
-    node.connections_mtx.lock();
+    node.connections_mtx.lockUncancelable(io_mod.get());
     for (node.connections.items) |c| {
         if (c.isDead()) continue;
         if (std.mem.eql(u8, &c.peer_overlay, &overlay)) {
@@ -1328,7 +1354,7 @@ fn handlePingpongApi(
             break;
         }
     }
-    node.connections_mtx.unlock();
+    node.connections_mtx.unlock(io_mod.get());
 
     if (conn == null) {
         try writeJson(http_stream, 404,
@@ -1421,7 +1447,7 @@ fn joinerFetchAdapter(
 
 fn handleBzzApi(
     node: *P2PNode,
-    stream: net.Stream,
+    stream: *tcp_mod.TcpStream,
     ref: Ref,
     /// Optional manifest path. Empty string ⇒ resolve the manifest's
     /// default file (bee's `website-index-document` flow). Non-empty ⇒
@@ -1587,7 +1613,7 @@ fn joinByRef(node: *P2PNode, ref: Ref) ![]u8 {
 
 /// `GET /health` and `GET /readiness`. Bee returns
 /// `{"status":"ok","version":"...","apiVersion":"..."}`.
-fn handleHealth(node: *P2PNode, stream: net.Stream) !void {
+fn handleHealth(node: *P2PNode, stream: *tcp_mod.TcpStream) !void {
     _ = node;
     try writeJson(stream, 200,
         \\{"status":"ok","version":"0.3.0-zigbee","apiVersion":"5.0.0"}
@@ -1596,7 +1622,7 @@ fn handleHealth(node: *P2PNode, stream: net.Stream) !void {
 
 /// `GET /node`. Bee returns `{"beeMode":"...","chequebookEnabled":bool,"swapEnabled":bool}`.
 /// Bee's mode enum already has `"ultra-light"` (`UltraLightMode`); that's exactly us.
-fn handleNode(node: *P2PNode, stream: net.Stream) !void {
+fn handleNode(node: *P2PNode, stream: *tcp_mod.TcpStream) !void {
     _ = node;
     try writeJson(stream, 200,
         \\{"beeMode":"ultra-light","chequebookEnabled":false,"swapEnabled":false}
@@ -1605,13 +1631,13 @@ fn handleNode(node: *P2PNode, stream: net.Stream) !void {
 
 /// `GET /addresses`. Bee returns:
 /// `{"overlay":"<hex>","underlay":[...],"ethereum":"<0x...>","chain_address":"<0x...>","publicKey":"<hex>","pssPublicKey":"<hex>"}`.
-fn handleAddresses(node: *P2PNode, stream: net.Stream) !void {
+fn handleAddresses(node: *P2PNode, stream: *tcp_mod.TcpStream) !void {
     var eth: [identity.ETHEREUM_ADDRESS_SIZE]u8 = undefined;
     node.id.ethereumAddress(&eth);
     var pubc: [identity.COMPRESSED_PUBKEY_SIZE]u8 = undefined;
     try node.id.compressedPublicKey(&pubc);
 
-    var body = std.ArrayList(u8){};
+    var body = std.ArrayList(u8).empty;
     defer body.deinit(node.allocator);
 
     try body.appendSlice(node.allocator, "{\"overlay\":\"");
@@ -1633,12 +1659,12 @@ fn handleAddresses(node: *P2PNode, stream: net.Stream) !void {
 }
 
 /// `GET /peers` — bee shape: `{"peers":[{"address":"<overlay>","fullNode":bool}]}`.
-fn handlePeersBee(node: *P2PNode, stream: net.Stream) !void {
-    var body = std.ArrayList(u8){};
+fn handlePeersBee(node: *P2PNode, stream: *tcp_mod.TcpStream) !void {
+    var body = std.ArrayList(u8).empty;
     defer body.deinit(node.allocator);
 
     try body.appendSlice(node.allocator, "{\"peers\":[");
-    node.connections_mtx.lock();
+    node.connections_mtx.lockUncancelable(io_mod.get());
     var first = true;
     for (node.connections.items) |c| {
         // Skip connections whose accept thread has exited; they're
@@ -1653,7 +1679,7 @@ fn handlePeersBee(node: *P2PNode, stream: net.Stream) !void {
         try body.appendSlice(node.allocator, if (c.peer_full_node) "true" else "false");
         try body.append(node.allocator, '}');
     }
-    node.connections_mtx.unlock();
+    node.connections_mtx.unlock(io_mod.get());
     try body.appendSlice(node.allocator, "]}");
 
     try writeJsonOwned(stream, 200, body.items);
@@ -1664,8 +1690,8 @@ fn handlePeersBee(node: *P2PNode, stream: net.Stream) !void {
 /// and per-bin counts derived from the peer table. Field names are
 /// bee-shape but the schema is a subset (we don't track timestamps,
 /// reachability, etc.).
-fn handleTopology(node: *P2PNode, stream: net.Stream) !void {
-    var body = std.ArrayList(u8){};
+fn handleTopology(node: *P2PNode, stream: *tcp_mod.TcpStream) !void {
+    var body = std.ArrayList(u8).empty;
     defer body.deinit(node.allocator);
 
     var line_buf: [256]u8 = undefined;
@@ -1705,7 +1731,7 @@ fn handleTopology(node: *P2PNode, stream: net.Stream) !void {
 /// `/retrieve` but a different output shape (we re-prepend the span here).
 fn handleChunkBee(
     node: *P2PNode,
-    stream: net.Stream,
+    stream: *tcp_mod.TcpStream,
     addr: [bmt.HASH_SIZE]u8,
 ) !void {
     var rc = node.retrieveChunkIterating(addr) catch |e| {
@@ -1734,7 +1760,7 @@ fn handleChunkBee(
 /// raw CAC trees, so the matching GET shouldn't second-guess.)
 fn handleBytes(
     node: *P2PNode,
-    stream: net.Stream,
+    stream: *tcp_mod.TcpStream,
     ref: Ref,
 ) !void {
     const file_bytes = joinByRef(node, ref) catch |e| {
@@ -1756,7 +1782,7 @@ fn handleBytes(
 
 // ---- JSON / hex helpers ----
 
-fn writeJson(stream: net.Stream, status: u16, body: []const u8) !void {
+fn writeJson(stream: *tcp_mod.TcpStream, status: u16, body: []const u8) !void {
     var hdr_buf: [256]u8 = undefined;
     const hdr = try std.fmt.bufPrint(
         &hdr_buf,
@@ -1767,7 +1793,7 @@ fn writeJson(stream: net.Stream, status: u16, body: []const u8) !void {
     try stream.writeAll(body);
 }
 
-fn writeJsonOwned(stream: net.Stream, status: u16, body: []const u8) !void {
+fn writeJsonOwned(stream: *tcp_mod.TcpStream, status: u16, body: []const u8) !void {
     return writeJson(stream, status, body);
 }
 
@@ -1820,7 +1846,7 @@ fn mantarayLoaderAdapter(
     }
 }
 
-fn writeHttp(stream: net.Stream, status: u16, content_type: []const u8, body: []const u8) !void {
+fn writeHttp(stream: *tcp_mod.TcpStream, status: u16, content_type: []const u8, body: []const u8) !void {
     var hdr_buf: [256]u8 = undefined;
     const hdr = try std.fmt.bufPrint(
         &hdr_buf,
@@ -1831,7 +1857,7 @@ fn writeHttp(stream: net.Stream, status: u16, content_type: []const u8, body: []
     try stream.writeAll(body);
 }
 
-fn writeHttpFmt(stream: net.Stream, status: u16, content_type: []const u8, comptime fmt: []const u8, args: anytype) !void {
+fn writeHttpFmt(stream: *tcp_mod.TcpStream, status: u16, content_type: []const u8, comptime fmt: []const u8, args: anytype) !void {
     var body_buf: [512]u8 = undefined;
     const body = try std.fmt.bufPrint(&body_buf, fmt, args);
     try writeHttp(stream, status, content_type, body);

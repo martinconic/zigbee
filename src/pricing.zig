@@ -52,10 +52,9 @@ pub fn announce(allocator: std.mem.Allocator, stream: *yamux.Stream, threshold_b
 
     // Build AnnouncePaymentThreshold { PaymentThreshold: <bytes> }.
     var msg_buf: [128]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&msg_buf);
-    const w = fbs.writer();
-    try proto.writeVarint(w, (1 << 3) | 2);
-    try proto.writeVarint(w, threshold_be.len);
+    var w = std.Io.Writer.fixed(&msg_buf);
+    try proto.writeVarint(&w, (1 << 3) | 2);
+    try proto.writeVarint(&w, threshold_be.len);
     try w.writeAll(threshold_be);
-    try swarm_proto.writeDelimited(stream, fbs.getWritten());
+    try swarm_proto.writeDelimited(stream, w.buffered());
 }

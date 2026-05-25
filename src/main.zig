@@ -10,6 +10,7 @@ const encryption = @import("encryption.zig");
 const credential_mod = @import("credential.zig");
 const accounting_mod = @import("accounting.zig");
 const bzz_address = @import("bzz_address.zig");
+const io_mod = @import("io.zig");
 
 /// Default local-store cap. 100 MiB ≈ 25 000 chunks at 4 KiB each;
 /// fits a Pi Zero comfortably and is tunable down for ESP32-class
@@ -225,7 +226,7 @@ pub fn resolveBootnodeCandidates(
     errdefer arena.deinit();
     const a = arena.allocator();
 
-    var out: std.ArrayList(BootnodeCandidate) = .{};
+    var out: std.ArrayList(BootnodeCandidate) = .empty;
 
     if (std.mem.startsWith(u8, bootnode_arg, "/dnsaddr/")) {
         const host = bootnode_arg["/dnsaddr/".len..];
@@ -351,13 +352,25 @@ fn printHelp() void {
     , .{});
 }
 
-pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+pub fn main(init: std.process.Init.Minimal) !void {
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
-    const argv = try std.process.argsAlloc(allocator);
-    defer std.process.argsFree(allocator, argv);
+    // Initialise the process-wide blocking Io once, up front and
+    // single-threaded, before any daemon worker threads can race the
+    // lazy first-init in io.get().
+    _ = io_mod.get();
+
+    // 0.16 removed std.process.argsAlloc; command-line args now arrive via the
+    // Init.Minimal parameter. toSlice yields NUL-terminated slices — copy them
+    // into a plain []const []const u8 for parseArgs (which the tests also feed
+    // that type). The arena frees both the slice array and toSlice's backing.
+    var args_arena = std.heap.ArenaAllocator.init(allocator);
+    defer args_arena.deinit();
+    const args_z = try init.args.toSlice(args_arena.allocator());
+    const argv = try args_arena.allocator().alloc([]const u8, args_z.len);
+    for (args_z, 0..) |a, i| argv[i] = a;
 
     const args = parseArgs(argv) catch |e| switch (e) {
         error.HelpRequested => {
@@ -386,7 +399,7 @@ pub fn main() !void {
         id_local.overlayAddress(args.network_id, nonce_local, &overlay_local);
 
         var out_buf: [128]u8 = undefined;
-        var stdout = std.fs.File.stdout().writer(&out_buf);
+        var stdout = std.Io.File.stdout().writer(io_mod.get(), &out_buf);
         try stdout.interface.print("eth_address=0x{s}\n", .{std.fmt.bytesToHex(eth_addr, .lower)});
         try stdout.interface.print("overlay=0x{s}\n", .{std.fmt.bytesToHex(overlay_local, .lower)});
         try stdout.interface.print("network_id={d}\n", .{args.network_id});
@@ -590,7 +603,7 @@ fn resolveIdentity(
     if (override) |p| {
         if (std.mem.eql(u8, p, ":ephemeral:")) {
             std.debug.print("[identity] ephemeral mode — generating fresh keypair + nonce (no persistence)\n", .{});
-            std.crypto.random.bytes(nonce_out);
+            io_mod.randomBytes(nonce_out);
             return try identity.Identity.generate();
         }
         std.debug.print("[identity] using key file: {s}\n", .{p});
@@ -618,10 +631,14 @@ test "parseArgs: defaults" {
 test "parseArgs: --peer + --network-id + retrieve" {
     const argv = [_][]const u8{
         "zigbee",
-        "--peer",          "1.2.3.4:5678",
-        "--network-id",    "1",
-        "retrieve",        "abc123",
-        "-o",              "out.bin",
+        "--peer",
+        "1.2.3.4:5678",
+        "--network-id",
+        "1",
+        "retrieve",
+        "abc123",
+        "-o",
+        "out.bin",
     };
     const a = try parseArgs(&argv);
     try std.testing.expectEqualStrings("1.2.3.4", a.peer_ip);

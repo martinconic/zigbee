@@ -29,6 +29,7 @@
 //! deploying a chequebook would be premature.
 
 const std = @import("std");
+const io_mod = @import("io.zig");
 
 pub const ADDRESS_LEN: usize = 20;
 pub const PRIVKEY_LEN: usize = 32;
@@ -51,9 +52,7 @@ pub const Error = error{
 /// field; the contents of the credential are not validated against an actual
 /// chequebook contract — that's bee's job at receive time.
 pub fn load(allocator: std.mem.Allocator, path: []const u8) !ChequebookCredential {
-    const f = try std.fs.cwd().openFile(path, .{});
-    defer f.close();
-    const data = try f.readToEndAlloc(allocator, 4096);
+    const data = try std.Io.Dir.cwd().readFileAlloc(io_mod.get(), path, allocator, .limited(8192));
     defer allocator.free(data);
 
     var parsed = std.json.parseFromSlice(std.json.Value, allocator, data, .{}) catch
@@ -106,9 +105,9 @@ test "credential: load valid file" {
         \\  "chain_id": 11155111
         \\}
     ;
-    try tmp.dir.writeFile(.{ .sub_path = "cb.json", .data = body });
+    try tmp.dir.writeFile(io_mod.get(), .{ .sub_path = "cb.json", .data = body });
 
-    const path = try tmp.dir.realpathAlloc(testing.allocator, "cb.json");
+    const path = try std.fs.path.join(testing.allocator, &.{ ".zig-cache", "tmp", tmp.sub_path[0..], "cb.json" });
     defer testing.allocator.free(path);
 
     const cred = try load(testing.allocator, path);
@@ -131,8 +130,8 @@ test "credential: missing field is rejected" {
     const body =
         \\{ "contract": "0x0000000000000000000000000000000000000000", "chain_id": 1 }
     ;
-    try tmp.dir.writeFile(.{ .sub_path = "cb.json", .data = body });
-    const path = try tmp.dir.realpathAlloc(testing.allocator, "cb.json");
+    try tmp.dir.writeFile(io_mod.get(), .{ .sub_path = "cb.json", .data = body });
+    const path = try std.fs.path.join(testing.allocator, &.{ ".zig-cache", "tmp", tmp.sub_path[0..], "cb.json" });
     defer testing.allocator.free(path);
 
     try testing.expectError(Error.InvalidCredentialFile, load(testing.allocator, path));
@@ -149,8 +148,8 @@ test "credential: malformed hex rejected" {
         \\  "chain_id": 1
         \\}
     ;
-    try tmp.dir.writeFile(.{ .sub_path = "cb.json", .data = body });
-    const path = try tmp.dir.realpathAlloc(testing.allocator, "cb.json");
+    try tmp.dir.writeFile(io_mod.get(), .{ .sub_path = "cb.json", .data = body });
+    const path = try std.fs.path.join(testing.allocator, &.{ ".zig-cache", "tmp", tmp.sub_path[0..], "cb.json" });
     defer testing.allocator.free(path);
 
     try testing.expectError(Error.InvalidContract, load(testing.allocator, path));

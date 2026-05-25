@@ -55,7 +55,7 @@ pub const PeerTable = struct {
             .allocator = allocator,
             .own_overlay = own_overlay,
             .peers = std.AutoHashMap([bzz_address.OVERLAY_LEN]u8, PeerEntry).init(allocator),
-            .bins = [_]std.ArrayList([bzz_address.OVERLAY_LEN]u8){.{}} ** MAX_BINS,
+            .bins = [_]std.ArrayList([bzz_address.OVERLAY_LEN]u8){.empty} ** MAX_BINS,
         };
     }
 

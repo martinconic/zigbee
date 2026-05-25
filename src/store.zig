@@ -35,6 +35,7 @@
 //     long uptime.
 
 const std = @import("std");
+const io_mod = @import("io.zig");
 
 pub const HASH_SIZE: usize = 32;
 pub const SPAN_SIZE: usize = 8;
@@ -87,7 +88,7 @@ pub const Store = struct {
     /// Head = most-recently-used, tail = least-recently-used.
     lru: std.DoublyLinkedList = .{},
 
-    mtx: std.Thread.Mutex = .{},
+    mtx: std.Io.Mutex = .init,
 
     /// Open the store rooted at `root`. Creates the directory if
     /// missing. Walks the existing tree to seed the in-memory index;
@@ -98,10 +99,7 @@ pub const Store = struct {
         root: []const u8,
         max_bytes: u64,
     ) !*Store {
-        std.fs.cwd().makePath(root) catch |e| switch (e) {
-            error.PathAlreadyExists => {},
-            else => return e,
-        };
+        try std.Io.Dir.cwd().createDirPath(io_mod.get(), root);
 
         const self = try allocator.create(Store);
         errdefer allocator.destroy(self);
@@ -125,26 +123,26 @@ pub const Store = struct {
     }
 
     pub fn deinit(self: *Store) void {
-        self.mtx.lock();
+        self.mtx.lockUncancelable(io_mod.get());
         var it = self.entries.iterator();
         while (it.next()) |kv| self.allocator.destroy(kv.value_ptr.*);
         self.entries.deinit();
         self.allocator.free(self.root);
-        self.mtx.unlock();
+        self.mtx.unlock(io_mod.get());
         self.allocator.destroy(self);
     }
 
     /// Fetch a cached chunk. Returns null on miss. On hit, moves the
     /// entry to the front of the LRU.
     pub fn get(self: *Store, addr: [HASH_SIZE]u8) !?StoredChunk {
-        self.mtx.lock();
+        self.mtx.lockUncancelable(io_mod.get());
         const entry_opt = self.entries.get(addr);
         if (entry_opt) |entry| {
             // Move to front (MRU).
             self.lru.remove(&entry.list_node);
             self.lru.prepend(&entry.list_node);
         }
-        self.mtx.unlock();
+        self.mtx.unlock(io_mod.get());
 
         if (entry_opt == null) return null;
 
@@ -154,30 +152,21 @@ pub const Store = struct {
         const path = try self.pathFor(addr);
         defer self.allocator.free(path);
 
-        const file = std.fs.cwd().openFile(path, .{}) catch |e| switch (e) {
+        const file_data = std.Io.Dir.cwd().readFileAlloc(io_mod.get(), path, self.allocator, .limited(MAX_FILE_BYTES + 1)) catch |e| switch (e) {
             // Race: another caller evicted the file between our hashmap
             // lookup and our open. Treat as miss.
             error.FileNotFound => return null,
+            error.StreamTooLong => return Error.InvalidStoreFile,
             else => return e,
         };
-        defer file.close();
+        defer self.allocator.free(file_data);
 
-        const stat = try file.stat();
-        if (stat.size < SPAN_SIZE or stat.size > MAX_FILE_BYTES) {
+        if (file_data.len < SPAN_SIZE or file_data.len > MAX_FILE_BYTES) {
             return Error.InvalidStoreFile;
         }
 
-        const file_size: usize = @intCast(stat.size);
-        const buf = try self.allocator.alloc(u8, file_size - SPAN_SIZE);
-        errdefer self.allocator.free(buf);
-
-        var span_buf: [SPAN_SIZE]u8 = undefined;
-        const n_span = try file.readAll(&span_buf);
-        if (n_span != SPAN_SIZE) return Error.InvalidStoreFile;
-        const span = std.mem.readInt(u64, &span_buf, .little);
-
-        const n = try file.readAll(buf);
-        if (n != buf.len) return Error.InvalidStoreFile;
+        const span = std.mem.readInt(u64, file_data[0..SPAN_SIZE], .little);
+        const buf = try self.allocator.dupe(u8, file_data[SPAN_SIZE..]);
 
         return StoredChunk{
             .span = span,
@@ -200,8 +189,8 @@ pub const Store = struct {
 
         try self.atomicWriteFile(addr, span, data);
 
-        self.mtx.lock();
-        defer self.mtx.unlock();
+        self.mtx.lockUncancelable(io_mod.get());
+        defer self.mtx.unlock(io_mod.get());
 
         if (self.entries.get(addr)) |existing| {
             // Replacing — adjust counter for the size delta and bump LRU.
@@ -227,14 +216,14 @@ pub const Store = struct {
     /// Total file bytes on disk, as tracked by the index. Approximate
     /// (rounding by file size, not actual block usage).
     pub fn currentBytes(self: *Store) u64 {
-        self.mtx.lock();
-        defer self.mtx.unlock();
+        self.mtx.lockUncancelable(io_mod.get());
+        defer self.mtx.unlock(io_mod.get());
         return self.cur_bytes;
     }
 
     pub fn entryCount(self: *Store) usize {
-        self.mtx.lock();
-        defer self.mtx.unlock();
+        self.mtx.lockUncancelable(io_mod.get());
+        defer self.mtx.unlock(io_mod.get());
         return self.entries.count();
     }
 
@@ -263,28 +252,28 @@ pub const Store = struct {
         const final_path = try self.pathFor(addr);
         defer self.allocator.free(final_path);
 
+        const io = io_mod.get();
+        const cwd = std.Io.Dir.cwd();
+
         // Ensure shard dir exists.
         if (std.fs.path.dirname(final_path)) |shard| {
-            std.fs.cwd().makePath(shard) catch |e| switch (e) {
-                error.PathAlreadyExists => {},
-                else => return e,
-            };
+            try cwd.createDirPath(io, shard);
         }
 
         const tmp_path = try std.fmt.allocPrint(self.allocator, "{s}.tmp", .{final_path});
         defer self.allocator.free(tmp_path);
 
         {
-            var f = try std.fs.cwd().createFile(tmp_path, .{ .truncate = true });
-            defer f.close();
+            var f = try cwd.createFile(io, tmp_path, .{ .truncate = true });
+            defer f.close(io);
             var span_buf: [SPAN_SIZE]u8 = undefined;
             std.mem.writeInt(u64, &span_buf, span, .little);
-            try f.writeAll(&span_buf);
-            try f.writeAll(data);
-            try f.sync();
+            try f.writeStreamingAll(io, &span_buf);
+            try f.writeStreamingAll(io, data);
+            try f.sync(io);
         }
 
-        try std.fs.cwd().rename(tmp_path, final_path);
+        try cwd.rename(tmp_path, cwd, final_path, io);
     }
 
     /// Walks `<root>/<2-hex>/*` and seeds the in-memory index.
@@ -296,39 +285,40 @@ pub const Store = struct {
             bytes: u64,
             mtime_ns: i128,
         };
-        var found = std.ArrayList(Found){};
+        var found: std.ArrayList(Found) = .empty;
         defer found.deinit(self.allocator);
 
-        var root_dir = std.fs.cwd().openDir(self.root, .{ .iterate = true }) catch |e| switch (e) {
+        const io = io_mod.get();
+        var root_dir = std.Io.Dir.cwd().openDir(io, self.root, .{ .iterate = true }) catch |e| switch (e) {
             error.FileNotFound => return,
             else => return e,
         };
-        defer root_dir.close();
+        defer root_dir.close(io);
 
         var root_it = root_dir.iterate();
-        while (try root_it.next()) |shard_dirent| {
+        while (try root_it.next(io)) |shard_dirent| {
             if (shard_dirent.kind != .directory) continue;
             if (shard_dirent.name.len != 2) continue;
             if (!isHexChar(shard_dirent.name[0]) or !isHexChar(shard_dirent.name[1])) continue;
 
-            var shard_dir = try root_dir.openDir(shard_dirent.name, .{ .iterate = true });
-            defer shard_dir.close();
+            var shard_dir = try root_dir.openDir(io, shard_dirent.name, .{ .iterate = true });
+            defer shard_dir.close(io);
 
             var shard_it = shard_dir.iterate();
-            while (try shard_it.next()) |chunk_dirent| {
+            while (try shard_it.next(io)) |chunk_dirent| {
                 if (chunk_dirent.kind != .file) continue;
                 if (chunk_dirent.name.len != HASH_SIZE * 2) continue;
 
                 var addr: [HASH_SIZE]u8 = undefined;
                 _ = std.fmt.hexToBytes(&addr, chunk_dirent.name) catch continue;
 
-                const stat = shard_dir.statFile(chunk_dirent.name) catch continue;
+                const stat = shard_dir.statFile(io, chunk_dirent.name, .{}) catch continue;
                 if (stat.size < SPAN_SIZE or stat.size > MAX_FILE_BYTES) continue;
 
                 try found.append(self.allocator, .{
                     .addr = addr,
                     .bytes = stat.size,
-                    .mtime_ns = stat.mtime,
+                    .mtime_ns = stat.mtime.nanoseconds,
                 });
             }
         }
@@ -354,8 +344,8 @@ pub const Store = struct {
     }
 
     fn evictDownTo(self: *Store, target: u64) !void {
-        self.mtx.lock();
-        defer self.mtx.unlock();
+        self.mtx.lockUncancelable(io_mod.get());
+        defer self.mtx.unlock(io_mod.get());
         try self.evictDownToLocked(target);
     }
 
@@ -370,7 +360,7 @@ pub const Store = struct {
             // Best-effort delete — if the file's already gone (e.g.
             // operator manually rm'd it), we still want to drop it
             // from the index so cur_bytes stays accurate.
-            std.fs.cwd().deleteFile(path) catch |e| switch (e) {
+            std.Io.Dir.cwd().deleteFile(io_mod.get(), path) catch |e| switch (e) {
                 error.FileNotFound => {},
                 else => return e,
             };
@@ -389,7 +379,9 @@ fn isHexChar(c: u8) bool {
 
 /// Default store path: `$HOME/.zigbee/store/`. Caller owns the slice.
 pub fn defaultStorePath(allocator: std.mem.Allocator) ![]u8 {
-    const home = std.posix.getenv("HOME") orelse return error.NoHomeEnv;
+    // 0.16 removed std.posix.getenv; use libc's getenv (we already link libc
+    // for secp256k1). Returns a NUL-terminated C string.
+    const home = std.mem.span(std.c.getenv("HOME") orelse return error.NoHomeEnv);
     return try std.fs.path.join(allocator, &.{ home, ".zigbee", "store" });
 }
 
@@ -399,7 +391,7 @@ test "store: round-trip put/get a single chunk" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    const root = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    const root = try std.fs.path.join(std.testing.allocator, &.{ ".zig-cache", "tmp", tmp.sub_path[0..] });
     defer std.testing.allocator.free(root);
 
     const s = try Store.openOrCreate(std.testing.allocator, root, 1024 * 1024);
@@ -419,7 +411,7 @@ test "store: miss on unknown address returns null" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    const root = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    const root = try std.fs.path.join(std.testing.allocator, &.{ ".zig-cache", "tmp", tmp.sub_path[0..] });
     defer std.testing.allocator.free(root);
 
     const s = try Store.openOrCreate(std.testing.allocator, root, 1024 * 1024);
@@ -433,7 +425,7 @@ test "store: over-cap eviction removes oldest" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    const root = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    const root = try std.fs.path.join(std.testing.allocator, &.{ ".zig-cache", "tmp", tmp.sub_path[0..] });
     defer std.testing.allocator.free(root);
 
     // Cap = 2 chunks worth (2 × (8 span + 64 payload) = 144 bytes).
@@ -468,7 +460,7 @@ test "store: get bumps entry to MRU so it survives next eviction" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    const root = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    const root = try std.fs.path.join(std.testing.allocator, &.{ ".zig-cache", "tmp", tmp.sub_path[0..] });
     defer std.testing.allocator.free(root);
 
     // Cap fits exactly two chunks of 72 bytes each.
@@ -513,7 +505,7 @@ test "store: restart-resume re-loads existing chunks" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    const root = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    const root = try std.fs.path.join(std.testing.allocator, &.{ ".zig-cache", "tmp", tmp.sub_path[0..] });
     defer std.testing.allocator.free(root);
 
     const data = "persistence check";
@@ -542,7 +534,7 @@ test "store: shrunken cap on reopen evicts down-to" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    const root = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    const root = try std.fs.path.join(std.testing.allocator, &.{ ".zig-cache", "tmp", tmp.sub_path[0..] });
     defer std.testing.allocator.free(root);
 
     const data = [_]u8{0x55} ** 64;
@@ -558,7 +550,7 @@ test "store: shrunken cap on reopen evicts down-to" {
         try s1.put(addr_a, 64, &data);
         // Tiny sleep so b's mtime is strictly after a's — the test
         // depends on the scan's mtime-desc sort placing b ahead of a.
-        std.Thread.sleep(15 * std.time.ns_per_ms);
+        io_mod.sleepNs(15 * std.time.ns_per_ms);
         try s1.put(addr_b, 64, &data);
     }
 

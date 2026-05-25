@@ -77,12 +77,11 @@ pub fn request(
 
     // Write Request { Addr: <32 bytes> } — varint(field=1, wire=2) || varint(32) || addr.
     var req_buf: [64]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&req_buf);
-    const w = fbs.writer();
-    try proto.writeVarint(w, (1 << 3) | 2);
-    try proto.writeVarint(w, chunk_address.len);
+    var w = std.Io.Writer.fixed(&req_buf);
+    try proto.writeVarint(&w, (1 << 3) | 2);
+    try proto.writeVarint(&w, chunk_address.len);
     try w.writeAll(&chunk_address);
-    try swarm_proto.writeDelimited(stream, fbs.getWritten());
+    try swarm_proto.writeDelimited(stream, w.buffered());
 
     // Read Delivery.
     const body = try swarm_proto.readDelimited(allocator, stream, MAX_CHUNK_BYTES);

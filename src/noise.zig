@@ -7,6 +7,8 @@ const HkdfSha256 = crypto.kdf.hkdf.HkdfSha256;
 const proto = @import("proto.zig");
 const identity = @import("identity.zig");
 const libp2p_key = @import("libp2p_key.zig");
+const io_mod = @import("io.zig");
+const tcp_mod = @import("tcp.zig");
 
 pub const NoiseHandshakeError = error{
     InvalidKey,
@@ -21,7 +23,7 @@ pub const EphemeralKeypair = struct {
 
     pub fn generate() !EphemeralKeypair {
         var kp: EphemeralKeypair = undefined;
-        crypto.random.bytes(&kp.secret_key);
+        io_mod.randomBytes(&kp.secret_key);
         const pub_key = try X25519.recoverPublicKey(kp.secret_key);
         @memcpy(&kp.public_key, &pub_key);
         return kp;
@@ -45,7 +47,7 @@ pub const CipherState = struct {
         if (self.k) |key| {
             var nonce: [12]u8 = [_]u8{0} ** 12;
             std.mem.writeInt(u64, nonce[4..12], self.n, .little);
-            
+
             // ChaCha20Poly1305 encryption. Tag is appended.
             // In Zig std.crypto, encrypt takes (dst, src, ad, nonce, key)
             // Wait, ChaCha20Poly1305 in Zig: encrypt(c: []u8, tag: *[16]u8, m: []const u8, ad: []const u8, npub: [12]u8, k: [32]u8)
@@ -63,11 +65,11 @@ pub const CipherState = struct {
             if (ciphertext.len < 16) return error.DecryptionFailed;
             var nonce: [12]u8 = [_]u8{0} ** 12;
             std.mem.writeInt(u64, nonce[4..12], self.n, .little);
-            
+
             var tag: [16]u8 = undefined;
             @memcpy(&tag, ciphertext[ciphertext.len - 16 ..]);
-            
-            try ChaCha20Poly1305.decrypt(plaintext, ciphertext[0..ciphertext.len - 16], tag, ad, nonce, key);
+
+            try ChaCha20Poly1305.decrypt(plaintext, ciphertext[0 .. ciphertext.len - 16], tag, ad, nonce, key);
             self.n += 1;
         } else {
             @memcpy(plaintext[0..ciphertext.len], ciphertext);
@@ -83,7 +85,7 @@ pub const SymmetricState = struct {
     pub fn init(protocol_name: []const u8) SymmetricState {
         var state: SymmetricState = undefined;
         state.cipher_state = CipherState{};
-        
+
         if (protocol_name.len <= 32) {
             @memset(&state.h, 0);
             @memcpy(state.h[0..protocol_name.len], protocol_name);
@@ -108,10 +110,10 @@ pub const SymmetricState = struct {
         const prk = HkdfSha256.extract(&self.ck, ikm);
         var okm: [64]u8 = undefined;
         HkdfSha256.expand(&okm, "", prk);
-        
+
         @memcpy(&new_ck, okm[0..32]);
         @memcpy(&temp_k, okm[32..64]);
-        
+
         @memcpy(&self.ck, &new_ck);
         self.cipher_state.setKey(temp_k);
     }
@@ -123,11 +125,11 @@ pub const SymmetricState = struct {
         const prk = HkdfSha256.extract(&self.ck, ikm);
         var okm: [96]u8 = undefined;
         HkdfSha256.expand(&okm, "", prk);
-        
+
         @memcpy(&new_ck, okm[0..32]);
         @memcpy(&temp_h, okm[32..64]);
         @memcpy(&temp_k, okm[64..96]);
-        
+
         @memcpy(&self.ck, &new_ck);
         self.mixHash(&temp_h);
         self.cipher_state.setKey(temp_k);
@@ -147,12 +149,12 @@ pub const SymmetricState = struct {
         const prk = HkdfSha256.extract(&self.ck, &[_]u8{});
         var okm: [64]u8 = undefined;
         HkdfSha256.expand(&okm, "", prk);
-        
+
         var c1 = CipherState{};
         c1.setKey(okm[0..32].*);
         var c2 = CipherState{};
         c2.setKey(okm[32..64].*);
-        
+
         return .{ c1, c2 };
     }
 };
@@ -225,12 +227,12 @@ pub const NoiseState = struct {
         try id.compressedPublicKey(&compressed_pub);
 
         var encoded_pubkey: [64]u8 = undefined;
-        var fbs_pubkey = std.io.fixedBufferStream(&encoded_pubkey);
-        try proto.writeVarint(fbs_pubkey.writer(), (1 << 3) | 0);
-        try proto.writeVarint(fbs_pubkey.writer(), 2);
-        try proto.writeVarint(fbs_pubkey.writer(), (2 << 3) | 2);
-        try proto.writeVarint(fbs_pubkey.writer(), compressed_pub.len);
-        try fbs_pubkey.writer().writeAll(&compressed_pub);
+        var w_pubkey = std.Io.Writer.fixed(&encoded_pubkey);
+        try proto.writeVarint(&w_pubkey, (1 << 3) | 0);
+        try proto.writeVarint(&w_pubkey, 2);
+        try proto.writeVarint(&w_pubkey, (2 << 3) | 2);
+        try proto.writeVarint(&w_pubkey, compressed_pub.len);
+        try w_pubkey.writeAll(&compressed_pub);
 
         var local_msg_to_sign: [56]u8 = undefined;
         @memcpy(local_msg_to_sign[0..24], "noise-libp2p-static-key:");
@@ -242,14 +244,14 @@ pub const NoiseState = struct {
         const sig_len = try identity.signDer(id.private_key, local_msg_hash, &sig_buf);
 
         var encoded_payload: [512]u8 = undefined;
-        var fbs_payload = std.io.fixedBufferStream(&encoded_payload);
-        try proto.encodeNoiseHandshakePayload(fbs_payload.writer(), .{
-            .identity_key = fbs_pubkey.getWritten(),
+        var w_payload = std.Io.Writer.fixed(&encoded_payload);
+        try proto.encodeNoiseHandshakePayload(&w_payload, .{
+            .identity_key = w_pubkey.buffered(),
             .identity_sig = sig_buf[0..sig_len],
             .data = &[_]u8{},
         });
 
-        const pt_payload = fbs_payload.getWritten();
+        const pt_payload = w_payload.buffered();
         if (msg2_len + pt_payload.len + 16 > msg2.len) return error.BufferTooSmall;
         try self.sym_state.encryptAndHash(pt_payload, msg2[msg2_len .. msg2_len + pt_payload.len + 16]);
         msg2_len += pt_payload.len + 16;
@@ -320,7 +322,7 @@ pub const NoiseState = struct {
         // Perform DH(ee)
         const ee_shared = try X25519.scalarmult(self.local_ephemeral.secret_key, re);
         self.sym_state.mixKey(&ee_shared);
-        
+
         // Read and decrypt `s` (48 bytes: 32 bytes + 16 bytes MAC)
         if (msg2_len < 32 + 48) return error.HandshakeFailed;
         var rs: [32]u8 = undefined;
@@ -330,7 +332,7 @@ pub const NoiseState = struct {
         // Perform DH(es) -> Note: Initiator es is local ephemeral and remote static
         const es_shared = try X25519.scalarmult(self.local_ephemeral.secret_key, rs);
         self.sym_state.mixKey(&es_shared);
-        
+
         // Decrypt payload
         const payload_ct_len = msg2_len - 80;
         var payload_pt: [65535]u8 = undefined;
@@ -339,7 +341,7 @@ pub const NoiseState = struct {
         // Decode and verify the payload
         const payload_data = payload_pt[0 .. payload_ct_len - 16];
         const payload = try proto.decodeNoiseHandshakePayload(payload_data);
-        
+
         const responder_libp2p_key = try proto.decodeLibp2pPublicKey(payload.identity_key);
 
         var msg_to_sign: [56]u8 = undefined;
@@ -362,15 +364,15 @@ pub const NoiseState = struct {
         // 3. Send `-> s, se`
         var msg3: [1024]u8 = undefined;
         var msg3_len: usize = 0;
-        
+
         // Encrypt our static key
-        try self.sym_state.encryptAndHash(&self.local_static.public_key, msg3[msg3_len..msg3_len+48]);
+        try self.sym_state.encryptAndHash(&self.local_static.public_key, msg3[msg3_len .. msg3_len + 48]);
         msg3_len += 48;
-        
+
         // Perform DH(se) -> Note: Initiator se is local static and remote ephemeral
         const se_shared = try X25519.scalarmult(self.local_static.secret_key, re);
         self.sym_state.mixKey(&se_shared);
-        
+
         // Encrypt our payload
         var local_payload = proto.NoiseHandshakePayload{
             .identity_key = &[_]u8{},
@@ -386,15 +388,15 @@ pub const NoiseState = struct {
         try id.compressedPublicKey(&compressed_pub);
 
         var encoded_pubkey: [64]u8 = undefined;
-        var fbs_pubkey = std.io.fixedBufferStream(&encoded_pubkey);
+        var w_pubkey = std.Io.Writer.fixed(&encoded_pubkey);
         // field 1 (key_type), wire type 0 (varint), value = 2 (Secp256k1)
-        try proto.writeVarint(fbs_pubkey.writer(), (1 << 3) | 0);
-        try proto.writeVarint(fbs_pubkey.writer(), 2);
+        try proto.writeVarint(&w_pubkey, (1 << 3) | 0);
+        try proto.writeVarint(&w_pubkey, 2);
         // field 2 (data), wire type 2 (length-delimited), 33 bytes compressed
-        try proto.writeVarint(fbs_pubkey.writer(), (2 << 3) | 2);
-        try proto.writeVarint(fbs_pubkey.writer(), compressed_pub.len);
-        try fbs_pubkey.writer().writeAll(&compressed_pub);
-        local_payload.identity_key = fbs_pubkey.getWritten();
+        try proto.writeVarint(&w_pubkey, (2 << 3) | 2);
+        try proto.writeVarint(&w_pubkey, compressed_pub.len);
+        try w_pubkey.writeAll(&compressed_pub);
+        local_payload.identity_key = w_pubkey.buffered();
 
         // 2. Sign our Noise static key with our libp2p identity key, DER-encoded.
         var local_msg_to_sign: [56]u8 = undefined;
@@ -414,16 +416,16 @@ pub const NoiseState = struct {
         //    this, bee falls through a code path that resets the connection
         //    on us. With it, bee starts Yamux directly after the handshake.
         var ext_buf: [64]u8 = undefined;
-        var fbs_ext = std.io.fixedBufferStream(&ext_buf);
+        var w_ext = std.Io.Writer.fixed(&ext_buf);
         const our_muxers = [_][]const u8{"/yamux/1.0.0"};
-        try proto.encodeNoiseExtensions(fbs_ext.writer(), .{ .stream_muxers = &our_muxers });
-        local_payload.extensions_bytes = fbs_ext.getWritten();
+        try proto.encodeNoiseExtensions(&w_ext, .{ .stream_muxers = &our_muxers });
+        local_payload.extensions_bytes = w_ext.buffered();
 
         var encoded_payload: [512]u8 = undefined;
-        var fbs_payload = std.io.fixedBufferStream(&encoded_payload);
-        try proto.encodeNoiseHandshakePayload(fbs_payload.writer(), local_payload);
-        
-        const pt_payload = fbs_payload.getWritten();
+        var w_payload = std.Io.Writer.fixed(&encoded_payload);
+        try proto.encodeNoiseHandshakePayload(&w_payload, local_payload);
+
+        const pt_payload = w_payload.buffered();
         if (msg3_len + pt_payload.len + 16 > msg3.len) return error.BufferTooSmall;
         try self.sym_state.encryptAndHash(pt_payload, msg3[msg3_len .. msg3_len + pt_payload.len + 16]);
         msg3_len += pt_payload.len + 16;
@@ -452,7 +454,7 @@ pub const NoiseState = struct {
         }
         const len = std.mem.readInt(u16, &len_buf, .big);
         if (len > buffer.len) return error.BufferTooSmall;
-        
+
         total_read = 0;
         while (total_read < len) {
             const n = try stream.read(buffer[total_read..len]);
@@ -471,7 +473,7 @@ pub const NoiseState = struct {
 };
 
 pub const NoiseStream = struct {
-    stream: std.net.Stream,
+    stream: *tcp_mod.TcpStream,
     tx_cipher: CipherState,
     rx_cipher: CipherState,
     read_buf: [65535]u8 = undefined,
@@ -494,7 +496,7 @@ pub const NoiseStream = struct {
         return self.peer_libp2p_key_buf[0..self.peer_libp2p_key_len];
     }
 
-    pub fn init(stream: std.net.Stream, tx: CipherState, rx: CipherState) NoiseStream {
+    pub fn init(stream: *tcp_mod.TcpStream, tx: CipherState, rx: CipherState) NoiseStream {
         return NoiseStream{
             .stream = stream,
             .tx_cipher = tx,
@@ -507,10 +509,10 @@ pub const NoiseStream = struct {
         while (offset < data.len) {
             const chunk_len = @min(data.len - offset, 65535 - 16);
             var frame: [65535]u8 = undefined;
-            
+
             // encryptWithAd takes ad, plaintext, ciphertext
             try self.tx_cipher.encryptWithAd(&[_]u8{}, data[offset .. offset + chunk_len], frame[0 .. chunk_len + 16]);
-            
+
             try NoiseState.writeNoiseFrame(self.stream, frame[0 .. chunk_len + 16]);
             offset += chunk_len;
         }
@@ -528,9 +530,9 @@ pub const NoiseStream = struct {
         // Buffer empty, read next frame
         var frame: [65535]u8 = undefined;
         const frame_len = try NoiseState.readNoiseFrame(self.stream, &frame);
-        
+
         if (frame_len < 16) return error.InvalidEncryptedFrame;
-        
+
         // Decrypt
         const pt_len = frame_len - 16;
         try self.rx_cipher.decryptWithAd(&[_]u8{}, frame[0..frame_len], self.read_buf[0..pt_len]);
@@ -547,18 +549,20 @@ test "noise keypair" {
 }
 
 const TestRoundtripCtx = struct {
-    server: *std.net.Server,
+    server: *std.Io.net.Server,
     err: ?anyerror = null,
     received: [16]u8 = undefined,
     received_len: usize = 0,
 };
 
 fn runTestResponder(ctx: *TestRoundtripCtx) void {
-    const conn = ctx.server.accept() catch |e| {
+    const io = io_mod.get();
+    const socket = ctx.server.accept(io) catch |e| {
         ctx.err = e;
         return;
     };
-    defer conn.stream.close();
+    var tcp = tcp_mod.TcpStream.init(socket);
+    defer tcp.close();
 
     const id_resp = identity.Identity.generate() catch |e| {
         ctx.err = e;
@@ -568,7 +572,7 @@ fn runTestResponder(ctx: *TestRoundtripCtx) void {
         ctx.err = e;
         return;
     };
-    var ns = state.processHandshakeResponder(conn.stream, &id_resp) catch |e| {
+    var ns = state.processHandshakeResponder(&tcp, &id_resp) catch |e| {
         ctx.err = e;
         return;
     };
@@ -596,20 +600,28 @@ fn runTestResponder(ctx: *TestRoundtripCtx) void {
 }
 
 test "noise XX handshake initiator <-> responder over localhost" {
-    // Bind an ephemeral port on the loopback interface.
-    const listen_addr = try std.net.Address.parseIp("127.0.0.1", 0);
-    var server = try listen_addr.listen(.{ .reuse_address = true });
-    defer server.deinit();
+    const io = io_mod.get();
+    // Bind loopback on the first free port in a small range. (0.16 dropped
+    // getsockname from std.posix, so we can't bind :0 and read back the
+    // ephemeral port — scanning a fixed range avoids that and stays robust
+    // against a busy port.)
+    var port: u16 = 49000;
+    var server = while (port < 49060) : (port += 1) {
+        const addr: std.Io.net.IpAddress = .{ .ip4 = .{ .bytes = .{ 127, 0, 0, 1 }, .port = port } };
+        break addr.listen(io, .{ .reuse_address = true }) catch continue;
+    } else return error.NoFreePort;
+    defer server.deinit(io);
 
     var ctx = TestRoundtripCtx{ .server = &server };
     var thread = try std.Thread.spawn(.{}, runTestResponder, .{&ctx});
 
     const id_init = try identity.Identity.generate();
-    var stream = try std.net.tcpConnectToAddress(server.listen_address);
-    defer stream.close();
+    const caddr: std.Io.net.IpAddress = .{ .ip4 = .{ .bytes = .{ 127, 0, 0, 1 }, .port = port } };
+    var tcp = tcp_mod.TcpStream.init(try caddr.connect(io, .{ .mode = .stream }));
+    defer tcp.close();
 
     var state = try NoiseState.init();
-    var ns = try state.processHandshakeInitiator(stream, &id_init);
+    var ns = try state.processHandshakeInitiator(&tcp, &id_init);
 
     const message = "swarm-zig-rocks!"; // 16 bytes
     try ns.writeAll(message);

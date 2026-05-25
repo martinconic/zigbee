@@ -18,7 +18,8 @@
 // those pointers.
 
 const std = @import("std");
-const net = std.net;
+const tcp_mod = @import("tcp.zig");
+const io_mod = @import("io.zig");
 
 const identity = @import("identity.zig");
 const noise = @import("noise.zig");
@@ -38,9 +39,10 @@ pub const Error = error{
 pub const Connection = struct {
     allocator: std.mem.Allocator,
 
-    // Underlying transport. tcp owns the fd; noise_stream is heap because
-    // YamuxSession holds a stable pointer to it.
-    tcp: net.Stream,
+    // Underlying transport. Both tcp and noise_stream are heap-allocated
+    // because NoiseStream holds a stable pointer to the TcpStream, and
+    // YamuxSession holds a stable pointer to the NoiseStream.
+    tcp: *tcp_mod.TcpStream,
     noise_stream: *noise.NoiseStream,
     session: *yamux.YamuxSession,
 
@@ -78,8 +80,9 @@ pub const Connection = struct {
         ip: [4]u8,
         port: u16,
     ) !*Connection {
-        const addr = net.Address.initIp4(ip, port);
-        const tcp = try net.tcpConnectToAddress(addr);
+        const tcp = try allocator.create(tcp_mod.TcpStream);
+        errdefer allocator.destroy(tcp);
+        tcp.* = try tcp_mod.connectIp4(ip, port);
         errdefer tcp.close();
 
         // 1. Outer multistream-select: negotiate /noise over raw TCP.
@@ -92,6 +95,7 @@ pub const Connection = struct {
         const ns_ptr = try allocator.create(noise.NoiseStream);
         errdefer allocator.destroy(ns_ptr);
         ns_ptr.* = try state.processHandshakeInitiator(tcp, id);
+        // NoiseStream now holds a stable pointer to *tcp* (the heap TcpStream).
 
         // 3. Yamux session. Owns the noise stream pointer for its lifetime.
         const session = try yamux.YamuxSession.init(allocator, ns_ptr, true);
@@ -160,7 +164,7 @@ pub const Connection = struct {
         //    payment threshold so bee's accounting can credit our
         //    retrieval requests. See README "known issues" — this is
         //    a race window with bee's ConnectIn loop.
-        std.Thread.sleep(2 * std.time.ns_per_s);
+        io_mod.sleepNs(2 * std.time.ns_per_s);
         announceThreshold(allocator, session) catch |e| {
             std.debug.print("[connection] threshold announce failed: {any}\n", .{e});
         };
@@ -191,6 +195,7 @@ pub const Connection = struct {
         if (self.accept_thread) |t| t.join();
         self.session.deinit();
         self.allocator.destroy(self.noise_stream);
+        self.allocator.destroy(self.tcp);
         self.allocator.free(self.peer_welcome_message);
         self.allocator.destroy(self);
     }

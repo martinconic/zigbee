@@ -245,7 +245,7 @@ pub fn parse(allocator: std.mem.Allocator, data: []const u8) !Node {
             fork_size += meta_len;
             // Bee pads metadata with newlines to a multiple of 32 bytes.
             // Strip those before JSON-parsing.
-            const trimmed = std.mem.trimRight(u8, meta_bytes, "\n");
+            const trimmed = std.mem.trimEnd(u8, meta_bytes, "\n");
             fork.metadata = parseMetadataJson(allocator, trimmed) catch null;
         }
 

@@ -44,15 +44,15 @@ pub fn respond(
 
     // 2. Build the Identify message.
     var msg_buf: [1024]u8 = undefined;
-    var msg_fbs = std.io.fixedBufferStream(&msg_buf);
-    try encodeIdentify(msg_fbs.writer(), id, protocols);
-    const msg_bytes = msg_fbs.getWritten();
+    var msg_w = std.Io.Writer.fixed(&msg_buf);
+    try encodeIdentify(&msg_w, id, protocols);
+    const msg_bytes = msg_w.buffered();
 
     // 3. Send length-prefixed (varint) on the stream.
     var len_buf: [10]u8 = undefined;
-    var len_fbs = std.io.fixedBufferStream(&len_buf);
-    try proto.writeVarint(len_fbs.writer(), msg_bytes.len);
-    try stream.writeAll(len_fbs.getWritten());
+    var len_w = std.Io.Writer.fixed(&len_buf);
+    try proto.writeVarint(&len_w, msg_bytes.len);
+    try stream.writeAll(len_w.buffered());
     try stream.writeAll(msg_bytes);
 
     // 4. Close our half of the stream.
@@ -68,17 +68,17 @@ fn encodeIdentify(
     //   tag(field=1, varint) || key_type=2 (Secp256k1)
     //   tag(field=2, length-delim) || len || 33-byte compressed pubkey
     var pubkey_proto: [64]u8 = undefined;
-    var pk_fbs = std.io.fixedBufferStream(&pubkey_proto);
+    var pk_w = std.Io.Writer.fixed(&pubkey_proto);
     {
         var compressed: [identity.COMPRESSED_PUBKEY_SIZE]u8 = undefined;
         try id.compressedPublicKey(&compressed);
-        try proto.writeVarint(pk_fbs.writer(), (1 << 3) | 0); // field 1, varint
-        try proto.writeVarint(pk_fbs.writer(), 2); // KeyType.Secp256k1
-        try proto.writeVarint(pk_fbs.writer(), (2 << 3) | 2); // field 2, len-delim
-        try proto.writeVarint(pk_fbs.writer(), compressed.len);
-        try pk_fbs.writer().writeAll(&compressed);
+        try proto.writeVarint(&pk_w, (1 << 3) | 0); // field 1, varint
+        try proto.writeVarint(&pk_w, 2); // KeyType.Secp256k1
+        try proto.writeVarint(&pk_w, (2 << 3) | 2); // field 2, len-delim
+        try proto.writeVarint(&pk_w, compressed.len);
+        try pk_w.writeAll(&compressed);
     }
-    const pubkey_bytes = pk_fbs.getWritten();
+    const pubkey_bytes = pk_w.buffered();
 
     // Field 1: publicKey (bytes)
     try proto.writeVarint(writer, (1 << 3) | 2);
@@ -248,9 +248,9 @@ test "identify message round-trips through our own decoder" {
     const protocols = [_][]const u8{ PROTOCOL_ID, "/yamux/1.0.0" };
 
     var msg_buf: [1024]u8 = undefined;
-    var msg_fbs = std.io.fixedBufferStream(&msg_buf);
-    try encodeIdentify(msg_fbs.writer(), &id, &protocols);
-    const written = msg_fbs.getWritten();
+    var msg_w = std.Io.Writer.fixed(&msg_buf);
+    try encodeIdentify(&msg_w, &id, &protocols);
+    const written = msg_w.buffered();
 
     // Walk fields by hand and check the types/numbers we expect.
     var seen_pubkey = false;
@@ -297,9 +297,9 @@ test "decodePeerInfo extracts pubkey, protocols, agent" {
     const protos = [_][]const u8{ "/ipfs/id/1.0.0", "/yamux/1.0.0", "/swarm/handshake/14.0.0/handshake" };
 
     var msg_buf: [1024]u8 = undefined;
-    var msg_fbs = std.io.fixedBufferStream(&msg_buf);
-    try encodeIdentify(msg_fbs.writer(), &id, &protos);
-    const written = msg_fbs.getWritten();
+    var msg_w = std.Io.Writer.fixed(&msg_buf);
+    try encodeIdentify(&msg_w, &id, &protos);
+    const written = msg_w.buffered();
 
     // decodePeerInfo takes ownership of the body buffer; copy.
     const body = try std.testing.allocator.dupe(u8, written);

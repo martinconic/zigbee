@@ -91,7 +91,7 @@ pub const Multiaddr = struct {
             if (self.pos >= self.bytes.len) return null;
             const code_res = try readVarint(self.bytes[self.pos..]);
             self.pos += code_res.bytes_read;
-            const code = std.meta.intToEnum(Code, code_res.value) catch return Error.UnsupportedComponent;
+            const code = std.enums.fromInt(Code, code_res.value) orelse return Error.UnsupportedComponent;
 
             if (fixedValueLen(code)) |n| {
                 if (self.pos + n > self.bytes.len) return Error.InvalidMultiaddr;
@@ -121,7 +121,7 @@ pub const Multiaddr = struct {
     pub fn fromText(allocator: std.mem.Allocator, text: []const u8) !Multiaddr {
         if (text.len == 0 or text[0] != '/') return Error.InvalidMultiaddr;
 
-        var bytes_buf: std.ArrayList(u8) = .{};
+        var bytes_buf: std.ArrayList(u8) = .empty;
         defer bytes_buf.deinit(allocator);
 
         var it = std.mem.tokenizeScalar(u8, text, '/');

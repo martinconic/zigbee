@@ -55,14 +55,13 @@ fn serializeUnderlays(out: []u8, addrs: []const []const u8) ![]u8 {
         @memcpy(out[0..addrs[0].len], addrs[0]);
         return out[0..addrs[0].len];
     }
-    var fbs = std.io.fixedBufferStream(out);
-    const w = fbs.writer();
+    var w = std.Io.Writer.fixed(out);
     try w.writeByte(UNDERLAY_LIST_PREFIX);
     for (addrs) |a| {
-        try proto.writeVarint(w, a.len);
+        try proto.writeVarint(&w, a.len);
         try w.writeAll(a);
     }
-    return fbs.getWritten();
+    return w.buffered();
 }
 
 /// Counts the multiaddrs encoded in an underlay payload without copying.
@@ -452,14 +451,13 @@ fn encodeSynAck(
     nonce: [32]u8,
     welcome_message: []const u8,
 ) ![]u8 {
-    var fbs = std.io.fixedBufferStream(out);
-    const w = fbs.writer();
+    var w = std.Io.Writer.fixed(out);
 
     // Field 1: syn (embedded message).
     var syn_buf: [4096]u8 = undefined;
     const syn_bytes = try encodeSyn(&syn_buf, syn_observed_underlay);
-    try proto.writeVarint(w, (1 << 3) | 2);
-    try proto.writeVarint(w, syn_bytes.len);
+    try proto.writeVarint(&w, (1 << 3) | 2);
+    try proto.writeVarint(&w, syn_bytes.len);
     try w.writeAll(syn_bytes);
 
     // Field 2: ack (embedded message).
@@ -474,40 +472,38 @@ fn encodeSynAck(
         nonce,
         welcome_message,
     );
-    try proto.writeVarint(w, (2 << 3) | 2);
-    try proto.writeVarint(w, ack_bytes.len);
+    try proto.writeVarint(&w, (2 << 3) | 2);
+    try proto.writeVarint(&w, ack_bytes.len);
     try w.writeAll(ack_bytes);
 
-    return fbs.getWritten();
+    return w.buffered();
 }
 
 fn encodeSyn(out: []u8, observed_underlay: []const u8) ![]u8 {
-    var fbs = std.io.fixedBufferStream(out);
-    const w = fbs.writer();
+    var w = std.Io.Writer.fixed(out);
     if (observed_underlay.len > 0) {
-        try proto.writeVarint(w, (1 << 3) | 2);
-        try proto.writeVarint(w, observed_underlay.len);
+        try proto.writeVarint(&w, (1 << 3) | 2);
+        try proto.writeVarint(&w, observed_underlay.len);
         try w.writeAll(observed_underlay);
     }
-    return fbs.getWritten();
+    return w.buffered();
 }
 
 fn encodeBzzAddress(out: []u8, underlay: []const u8, overlay: [32]u8, signature: [65]u8) ![]u8 {
-    var fbs = std.io.fixedBufferStream(out);
-    const w = fbs.writer();
+    var w = std.Io.Writer.fixed(out);
     // Field 1: Underlay (bytes)
-    try proto.writeVarint(w, (1 << 3) | 2);
-    try proto.writeVarint(w, underlay.len);
+    try proto.writeVarint(&w, (1 << 3) | 2);
+    try proto.writeVarint(&w, underlay.len);
     try w.writeAll(underlay);
     // Field 2: Signature (bytes)
-    try proto.writeVarint(w, (2 << 3) | 2);
-    try proto.writeVarint(w, signature.len);
+    try proto.writeVarint(&w, (2 << 3) | 2);
+    try proto.writeVarint(&w, signature.len);
     try w.writeAll(&signature);
     // Field 3: Overlay (bytes)
-    try proto.writeVarint(w, (3 << 3) | 2);
-    try proto.writeVarint(w, overlay.len);
+    try proto.writeVarint(&w, (3 << 3) | 2);
+    try proto.writeVarint(&w, overlay.len);
     try w.writeAll(&overlay);
-    return fbs.getWritten();
+    return w.buffered();
 }
 
 fn encodeAck(
@@ -520,40 +516,39 @@ fn encodeAck(
     nonce: [32]u8,
     welcome_message: []const u8,
 ) ![]u8 {
-    var fbs = std.io.fixedBufferStream(out);
-    const w = fbs.writer();
+    var w = std.Io.Writer.fixed(out);
     // Field 1: Address (BzzAddress, embedded message)
     var addr_buf: [4096]u8 = undefined;
     const addr_bytes = try encodeBzzAddress(&addr_buf, underlay, overlay, signature);
-    try proto.writeVarint(w, (1 << 3) | 2);
-    try proto.writeVarint(w, addr_bytes.len);
+    try proto.writeVarint(&w, (1 << 3) | 2);
+    try proto.writeVarint(&w, addr_bytes.len);
     try w.writeAll(addr_bytes);
     // Field 2: NetworkID (varint)
-    try proto.writeVarint(w, (2 << 3) | 0);
-    try proto.writeVarint(w, network_id);
+    try proto.writeVarint(&w, (2 << 3) | 0);
+    try proto.writeVarint(&w, network_id);
     // Field 3: FullNode (bool)
-    try proto.writeVarint(w, (3 << 3) | 0);
-    try proto.writeVarint(w, if (full_node) 1 else 0);
+    try proto.writeVarint(&w, (3 << 3) | 0);
+    try proto.writeVarint(&w, if (full_node) 1 else 0);
     // Field 4: Nonce (bytes)
-    try proto.writeVarint(w, (4 << 3) | 2);
-    try proto.writeVarint(w, nonce.len);
+    try proto.writeVarint(&w, (4 << 3) | 2);
+    try proto.writeVarint(&w, nonce.len);
     try w.writeAll(&nonce);
     // Field 99: WelcomeMessage (string)
     if (welcome_message.len > 0) {
-        try proto.writeVarint(w, (99 << 3) | 2);
-        try proto.writeVarint(w, welcome_message.len);
+        try proto.writeVarint(&w, (99 << 3) | 2);
+        try proto.writeVarint(&w, welcome_message.len);
         try w.writeAll(welcome_message);
     }
-    return fbs.getWritten();
+    return w.buffered();
 }
 
 // ---------- delimited framing ----------
 
 fn writeDelimited(stream: *yamux.Stream, payload: []const u8) !void {
     var len_buf: [10]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&len_buf);
-    try proto.writeVarint(fbs.writer(), payload.len);
-    try stream.writeAll(fbs.getWritten());
+    var w = std.Io.Writer.fixed(&len_buf);
+    try proto.writeVarint(&w, payload.len);
+    try stream.writeAll(w.buffered());
     try stream.writeAll(payload);
 }
 

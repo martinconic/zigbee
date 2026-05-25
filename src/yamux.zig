@@ -18,6 +18,7 @@
 //   - Configurable initial window — hardcoded to 256 KiB to match the spec.
 
 const std = @import("std");
+const io_mod = @import("io.zig");
 const noise = @import("noise.zig");
 
 pub const YamuxFrameType = enum(u8) {
@@ -113,11 +114,11 @@ pub const Stream = struct {
     local_closed: bool = false,
     reset_flag: bool = false,
 
-    mtx: std.Thread.Mutex = .{},
+    mtx: std.Io.Mutex = .init,
     /// Fired on inbound data, FIN, or RST.
-    recv_cond: std.Thread.Condition = .{},
+    recv_cond: std.Io.Condition = .init,
     /// Fired on inbound WindowUpdate (send_window grew).
-    send_cond: std.Thread.Condition = .{},
+    send_cond: std.Io.Condition = .init,
 
     _allocator: std.mem.Allocator,
 
@@ -125,7 +126,7 @@ pub const Stream = struct {
         return .{
             .session = session,
             .id = id,
-            .recv = std.ArrayList(u8){},
+            .recv = std.ArrayList(u8).empty,
             .recv_consumed_since_update = 0,
             .send_window = INITIAL_WINDOW,
             .pending_flag = if (initiated_locally) .syn else .ack,
@@ -140,18 +141,18 @@ pub const Stream = struct {
     /// Reads up to `dest.len` bytes. Blocks until at least one byte is
     /// available, or the stream ends. Returns 0 on graceful FIN.
     pub fn read(self: *Stream, dest: []u8) !usize {
-        self.mtx.lock();
+        self.mtx.lockUncancelable(io_mod.get());
 
         while (self.recv.items.len == 0) {
             if (self.reset_flag) {
-                self.mtx.unlock();
+                self.mtx.unlock(io_mod.get());
                 return Error.StreamReset;
             }
             if (self.remote_closed) {
-                self.mtx.unlock();
+                self.mtx.unlock(io_mod.get());
                 return 0;
             }
-            self.recv_cond.wait(&self.mtx);
+            self.recv_cond.waitUncancelable(io_mod.get(), &self.mtx);
         }
 
         const n = @min(self.recv.items.len, dest.len);
@@ -168,7 +169,7 @@ pub const Stream = struct {
         const update_delta = if (should_update) self.recv_consumed_since_update else 0;
         if (should_update) self.recv_consumed_since_update = 0;
 
-        self.mtx.unlock();
+        self.mtx.unlock(io_mod.get());
 
         if (should_update) {
             self.session.writeHeader(.{
@@ -187,22 +188,22 @@ pub const Stream = struct {
     pub fn writeAll(self: *Stream, data: []const u8) !void {
         var offset: usize = 0;
         while (offset < data.len) {
-            self.mtx.lock();
+            self.mtx.lockUncancelable(io_mod.get());
             while (self.send_window == 0 and !self.reset_flag and !self.local_closed) {
-                self.send_cond.wait(&self.mtx);
+                self.send_cond.waitUncancelable(io_mod.get(), &self.mtx);
             }
             if (self.reset_flag) {
-                self.mtx.unlock();
+                self.mtx.unlock(io_mod.get());
                 return Error.StreamReset;
             }
             if (self.local_closed) {
-                self.mtx.unlock();
+                self.mtx.unlock(io_mod.get());
                 return Error.StreamClosed;
             }
             const chunk_len: u32 = @intCast(@min(@min(data.len - offset, MAX_FRAME_PAYLOAD), self.send_window));
             self.send_window -= chunk_len;
             const flags = self.takePendingFlagsLocked();
-            self.mtx.unlock();
+            self.mtx.unlock(io_mod.get());
 
             try self.session.writeFrame(.{
                 .version = 0,
@@ -221,16 +222,16 @@ pub const Stream = struct {
     /// After cancel(), read() returns StreamReset and writeAll() / close()
     /// become no-ops.
     pub fn cancel(self: *Stream) void {
-        self.mtx.lock();
+        self.mtx.lockUncancelable(io_mod.get());
         if (self.reset_flag) {
-            self.mtx.unlock();
+            self.mtx.unlock(io_mod.get());
             return;
         }
         self.reset_flag = true;
         const flags_base = self.takePendingFlagsLocked();
-        self.recv_cond.broadcast();
-        self.send_cond.broadcast();
-        self.mtx.unlock();
+        self.recv_cond.broadcast(io_mod.get());
+        self.send_cond.broadcast(io_mod.get());
+        self.mtx.unlock(io_mod.get());
 
         // Best-effort RST to peer. If the session is dead, ignore.
         var flags = flags_base;
@@ -247,14 +248,14 @@ pub const Stream = struct {
     /// Sends FIN on this stream. After close the stream still accepts
     /// inbound data until the peer also sends FIN.
     pub fn close(self: *Stream) !void {
-        self.mtx.lock();
+        self.mtx.lockUncancelable(io_mod.get());
         if (self.local_closed or self.reset_flag) {
-            self.mtx.unlock();
+            self.mtx.unlock(io_mod.get());
             return;
         }
         self.local_closed = true;
         const flags_base = self.takePendingFlagsLocked();
-        self.mtx.unlock();
+        self.mtx.unlock(io_mod.get());
 
         var flags = flags_base;
         flags.fin = true;
@@ -268,8 +269,8 @@ pub const Stream = struct {
     }
 
     fn takePendingFlags(self: *Stream) YamuxFlags {
-        self.mtx.lock();
-        defer self.mtx.unlock();
+        self.mtx.lockUncancelable(io_mod.get());
+        defer self.mtx.unlock(io_mod.get());
         return self.takePendingFlagsLocked();
     }
 
@@ -295,12 +296,12 @@ pub const YamuxSession = struct {
     next_stream_id: u32,
 
     /// Guards: streams, accept_queue, next_stream_id, shutdown.
-    mtx: std.Thread.Mutex = .{},
-    accept_cond: std.Thread.Condition = .{},
+    mtx: std.Io.Mutex = .init,
+    accept_cond: std.Io.Condition = .init,
 
     /// Serializes writes to the underlying NoiseStream. Held only across
     /// individual frame writes; never held across blocking operations.
-    write_mtx: std.Thread.Mutex = .{},
+    write_mtx: std.Io.Mutex = .init,
 
     reader_thread: ?std.Thread = null,
     shutdown_flag: bool = false,
@@ -312,7 +313,7 @@ pub const YamuxSession = struct {
             .allocator = allocator,
             .is_client = is_client,
             .streams = std.AutoHashMap(u32, *Stream).init(allocator),
-            .accept_queue = std.ArrayList(*Stream){},
+            .accept_queue = std.ArrayList(*Stream).empty,
             // Client uses odd IDs starting at 1; server uses even starting at 2.
             .next_stream_id = if (is_client) 1 else 2,
         };
@@ -341,10 +342,10 @@ pub const YamuxSession = struct {
 
     /// Blocks until a peer-initiated stream becomes available.
     pub fn accept(self: *YamuxSession) !*Stream {
-        self.mtx.lock();
-        defer self.mtx.unlock();
+        self.mtx.lockUncancelable(io_mod.get());
+        defer self.mtx.unlock(io_mod.get());
         while (self.accept_queue.items.len == 0 and !self.shutdown_flag) {
-            self.accept_cond.wait(&self.mtx);
+            self.accept_cond.waitUncancelable(io_mod.get(), &self.mtx);
         }
         if (self.accept_queue.items.len == 0) return Error.AcceptQueueClosed;
         return self.accept_queue.orderedRemove(0);
@@ -353,34 +354,34 @@ pub const YamuxSession = struct {
     /// Opens a new outbound stream. The SYN is piggybacked on the first
     /// frame the caller sends (so this call doesn't itself emit any bytes).
     pub fn open(self: *YamuxSession) !*Stream {
-        self.mtx.lock();
+        self.mtx.lockUncancelable(io_mod.get());
         const id = self.next_stream_id;
         self.next_stream_id += 2;
         const s = try self.allocator.create(Stream);
         s.* = Stream.init(self.allocator, self, id, true);
         try self.streams.put(id, s);
-        self.mtx.unlock();
+        self.mtx.unlock(io_mod.get());
         return s;
     }
 
     fn shutdown(self: *YamuxSession) void {
-        self.mtx.lock();
+        self.mtx.lockUncancelable(io_mod.get());
         self.shutdown_flag = true;
-        self.mtx.unlock();
-        self.accept_cond.broadcast();
+        self.mtx.unlock(io_mod.get());
+        self.accept_cond.broadcast(io_mod.get());
     }
 
     fn writeHeader(self: *YamuxSession, hdr: YamuxHeader) !void {
-        self.write_mtx.lock();
-        defer self.write_mtx.unlock();
+        self.write_mtx.lockUncancelable(io_mod.get());
+        defer self.write_mtx.unlock(io_mod.get());
         var buf: [12]u8 = undefined;
         hdr.encode(&buf);
         try self.underlying.writeAll(&buf);
     }
 
     fn writeFrame(self: *YamuxSession, hdr: YamuxHeader, body: []const u8) !void {
-        self.write_mtx.lock();
-        defer self.write_mtx.unlock();
+        self.write_mtx.lockUncancelable(io_mod.get());
+        defer self.write_mtx.unlock(io_mod.get());
         var buf: [12]u8 = undefined;
         hdr.encode(&buf);
         try self.underlying.writeAll(&buf);
@@ -399,15 +400,15 @@ pub const YamuxSession = struct {
     fn getOrCreateStream(self: *YamuxSession, id: u32, syn: bool) !?*Stream {
         // Returns null if a frame targeting an unknown stream without SYN
         // arrived (we should send a RST in that case).
-        self.mtx.lock();
-        defer self.mtx.unlock();
+        self.mtx.lockUncancelable(io_mod.get());
+        defer self.mtx.unlock(io_mod.get());
         if (self.streams.get(id)) |s| return s;
         if (!syn) return null;
         const s = try self.allocator.create(Stream);
         s.* = Stream.init(self.allocator, self, id, false);
         try self.streams.put(id, s);
         try self.accept_queue.append(self.allocator, s);
-        self.accept_cond.signal();
+        self.accept_cond.signal(io_mod.get());
         return s;
     }
 
@@ -417,24 +418,24 @@ pub const YamuxSession = struct {
         };
         self.shutdown();
         // Wake any pending stream reads so they unblock.
-        self.mtx.lock();
+        self.mtx.lockUncancelable(io_mod.get());
         var it = self.streams.iterator();
         while (it.next()) |entry| {
             const s = entry.value_ptr.*;
-            s.mtx.lock();
+            s.mtx.lockUncancelable(io_mod.get());
             s.reset_flag = true;
-            s.mtx.unlock();
-            s.recv_cond.broadcast();
-            s.send_cond.broadcast();
+            s.mtx.unlock(io_mod.get());
+            s.recv_cond.broadcast(io_mod.get());
+            s.send_cond.broadcast(io_mod.get());
         }
-        self.mtx.unlock();
+        self.mtx.unlock(io_mod.get());
     }
 
     fn runReaderLoop(self: *YamuxSession) !void {
         while (true) {
-            self.mtx.lock();
+            self.mtx.lockUncancelable(io_mod.get());
             const stop = self.shutdown_flag;
-            self.mtx.unlock();
+            self.mtx.unlock(io_mod.get());
             if (stop) return;
 
             var hdr_buf: [12]u8 = undefined;
@@ -474,31 +475,31 @@ pub const YamuxSession = struct {
                         continue;
                     };
 
-                    s.mtx.lock();
+                    s.mtx.lockUncancelable(io_mod.get());
                     if (hdr.flags.rst) {
                         s.reset_flag = true;
-                        s.mtx.unlock();
-                        s.recv_cond.broadcast();
-                        s.send_cond.broadcast();
+                        s.mtx.unlock(io_mod.get());
+                        s.recv_cond.broadcast(io_mod.get());
+                        s.send_cond.broadcast(io_mod.get());
                         continue;
                     }
                     if (hdr.frame_type == .WindowUpdate) {
                         // Peer granted us more send-window.
                         s.send_window +|= hdr.length;
-                        s.mtx.unlock();
-                        s.send_cond.broadcast();
+                        s.mtx.unlock(io_mod.get());
+                        s.send_cond.broadcast(io_mod.get());
                         continue;
                     }
                     // Data frame.
                     if (body_len > 0) {
                         s.recv.appendSlice(self.allocator, body[0..body_len]) catch |e| {
-                            s.mtx.unlock();
+                            s.mtx.unlock(io_mod.get());
                             return e;
                         };
                     }
                     if (hdr.flags.fin) s.remote_closed = true;
-                    s.mtx.unlock();
-                    s.recv_cond.broadcast();
+                    s.mtx.unlock(io_mod.get());
+                    s.recv_cond.broadcast(io_mod.get());
                 },
             }
         }

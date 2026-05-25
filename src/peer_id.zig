@@ -27,14 +27,13 @@ pub fn marshalSecp256k1PublicKey(id: *const identity.Identity, out: []u8) ![]u8 
     var compressed: [identity.COMPRESSED_PUBKEY_SIZE]u8 = undefined;
     try id.compressedPublicKey(&compressed);
 
-    var fbs = std.io.fixedBufferStream(out);
-    const w = fbs.writer();
-    try proto.writeVarint(w, (1 << 3) | 0); // field 1, varint
-    try proto.writeVarint(w, 2); // KeyType.Secp256k1
-    try proto.writeVarint(w, (2 << 3) | 2); // field 2, length-delim
-    try proto.writeVarint(w, compressed.len);
+    var w = std.Io.Writer.fixed(out);
+    try proto.writeVarint(&w, (1 << 3) | 0); // field 1, varint
+    try proto.writeVarint(&w, 2); // KeyType.Secp256k1
+    try proto.writeVarint(&w, (2 << 3) | 2); // field 2, length-delim
+    try proto.writeVarint(&w, compressed.len);
     try w.writeAll(&compressed);
-    return fbs.getWritten();
+    return w.buffered();
 }
 
 /// Computes the libp2p PeerID multihash for an `Identity`. Writes into `out`
@@ -43,34 +42,32 @@ pub fn computePeerId(id: *const identity.Identity, out: []u8) ![]u8 {
     var marshal_buf: [64]u8 = undefined;
     const marshaled = try marshalSecp256k1PublicKey(id, &marshal_buf);
 
-    var fbs = std.io.fixedBufferStream(out);
-    const w = fbs.writer();
+    var w = std.Io.Writer.fixed(out);
     if (marshaled.len <= MAX_INLINE_KEY_LEN) {
         // Identity multihash: code 0x00 || varint(len) || raw bytes.
-        try proto.writeVarint(w, 0x00);
-        try proto.writeVarint(w, marshaled.len);
+        try proto.writeVarint(&w, 0x00);
+        try proto.writeVarint(&w, marshaled.len);
         try w.writeAll(marshaled);
     } else {
         // SHA-256 multihash: code 0x12 || 0x20 || 32 sha256 bytes.
         var digest: [32]u8 = undefined;
         std.crypto.hash.sha2.Sha256.hash(marshaled, &digest, .{});
-        try proto.writeVarint(w, 0x12);
-        try proto.writeVarint(w, 32);
+        try proto.writeVarint(&w, 0x12);
+        try proto.writeVarint(&w, 32);
         try w.writeAll(&digest);
     }
-    return fbs.getWritten();
+    return w.buffered();
 }
 
 /// Marshals an arbitrary libp2p PublicKey proto: { Type: key_type, Data: data }.
 fn marshalLibp2pPublicKey(out: []u8, key_type: u64, data: []const u8) ![]u8 {
-    var fbs = std.io.fixedBufferStream(out);
-    const w = fbs.writer();
-    try proto.writeVarint(w, (1 << 3) | 0);
-    try proto.writeVarint(w, key_type);
-    try proto.writeVarint(w, (2 << 3) | 2);
-    try proto.writeVarint(w, data.len);
+    var w = std.Io.Writer.fixed(out);
+    try proto.writeVarint(&w, (1 << 3) | 0);
+    try proto.writeVarint(&w, key_type);
+    try proto.writeVarint(&w, (2 << 3) | 2);
+    try proto.writeVarint(&w, data.len);
     try w.writeAll(data);
-    return fbs.getWritten();
+    return w.buffered();
 }
 
 /// Computes a PeerID multihash for an arbitrary peer's libp2p public key.
@@ -80,37 +77,35 @@ pub fn peerIdFromLibp2pKey(out: []u8, key_type: u64, data: []const u8) ![]u8 {
     var marshal_buf: [256]u8 = undefined;
     const marshaled = try marshalLibp2pPublicKey(&marshal_buf, key_type, data);
 
-    var fbs = std.io.fixedBufferStream(out);
-    const w = fbs.writer();
+    var w = std.Io.Writer.fixed(out);
     if (marshaled.len <= MAX_INLINE_KEY_LEN) {
-        try proto.writeVarint(w, 0x00);
-        try proto.writeVarint(w, marshaled.len);
+        try proto.writeVarint(&w, 0x00);
+        try proto.writeVarint(&w, marshaled.len);
         try w.writeAll(marshaled);
     } else {
         var digest: [32]u8 = undefined;
         std.crypto.hash.sha2.Sha256.hash(marshaled, &digest, .{});
-        try proto.writeVarint(w, 0x12);
-        try proto.writeVarint(w, 32);
+        try proto.writeVarint(&w, 0x12);
+        try proto.writeVarint(&w, 32);
         try w.writeAll(&digest);
     }
-    return fbs.getWritten();
+    return w.buffered();
 }
 
 /// Builds `/ip4/<ip>/tcp/<port>/p2p/<peer-id>` for a peer whose PeerID
 /// multihash is already computed (e.g. via peerIdFromLibp2pKey).
 pub fn buildIp4TcpP2pMultiaddrFromPeerId(out: []u8, ip: [4]u8, port: u16, peer_id_mh: []const u8) ![]u8 {
-    var fbs = std.io.fixedBufferStream(out);
-    const w = fbs.writer();
-    try proto.writeVarint(w, 0x04);
+    var w = std.Io.Writer.fixed(out);
+    try proto.writeVarint(&w, 0x04);
     try w.writeAll(&ip);
-    try proto.writeVarint(w, 0x06);
+    try proto.writeVarint(&w, 0x06);
     var port_buf: [2]u8 = undefined;
     std.mem.writeInt(u16, &port_buf, port, .big);
     try w.writeAll(&port_buf);
-    try proto.writeVarint(w, 0x01a5);
-    try proto.writeVarint(w, peer_id_mh.len);
+    try proto.writeVarint(&w, 0x01a5);
+    try proto.writeVarint(&w, peer_id_mh.len);
     try w.writeAll(peer_id_mh);
-    return fbs.getWritten();
+    return w.buffered();
 }
 
 /// Builds the wire bytes for `/ip4/<ip>/tcp/<port>/p2p/<our-peer-id>`. This
@@ -121,25 +116,24 @@ pub fn buildIp4TcpP2pMultiaddr(out: []u8, id: *const identity.Identity, ip: [4]u
     var pid_buf: [64]u8 = undefined;
     const pid = try computePeerId(id, &pid_buf);
 
-    var fbs = std.io.fixedBufferStream(out);
-    const w = fbs.writer();
+    var w = std.Io.Writer.fixed(out);
 
     // /ip4/<A.B.C.D>: code 0x04 (varint = 1 byte) + 4 bytes.
-    try proto.writeVarint(w, 0x04);
+    try proto.writeVarint(&w, 0x04);
     try w.writeAll(&ip);
 
     // /tcp/<N>: code 0x06 + 2-byte BE port.
-    try proto.writeVarint(w, 0x06);
+    try proto.writeVarint(&w, 0x06);
     var port_buf: [2]u8 = undefined;
     std.mem.writeInt(u16, &port_buf, port, .big);
     try w.writeAll(&port_buf);
 
     // /p2p/<multihash>: code 0x01a5 (varint A5 03) + varint(len(mh)) + mh.
-    try proto.writeVarint(w, 0x01a5);
-    try proto.writeVarint(w, pid.len);
+    try proto.writeVarint(&w, 0x01a5);
+    try proto.writeVarint(&w, pid.len);
     try w.writeAll(pid);
 
-    return fbs.getWritten();
+    return w.buffered();
 }
 
 test "buildIp4TcpP2pMultiaddr produces a valid multiaddr binary" {

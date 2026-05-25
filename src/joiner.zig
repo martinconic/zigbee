@@ -128,7 +128,7 @@ fn joinInternal(
     if (span > MAX_REASONABLE_SPAN) return Error.LikelySocReference;
     if (span > std.math.maxInt(usize)) return Error.SpanTooLarge;
 
-    var out = std.ArrayList(u8){};
+    var out: std.ArrayList(u8) = .empty;
     errdefer out.deinit(allocator);
     try out.ensureTotalCapacity(allocator, @intCast(span));
 

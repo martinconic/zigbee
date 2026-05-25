@@ -151,13 +151,12 @@ fn buildEmitChequePb(allocator: std.mem.Allocator, cheque_json: []const u8) ![]u
     const buf = try allocator.alloc(u8, cheque_json.len + 12);
     errdefer allocator.free(buf);
 
-    var fbs = std.io.fixedBufferStream(buf);
-    const w = fbs.writer();
-    try proto.writeVarint(w, (1 << 3) | 2);
-    try proto.writeVarint(w, cheque_json.len);
+    var w = std.Io.Writer.fixed(buf);
+    try proto.writeVarint(&w, (1 << 3) | 2);
+    try proto.writeVarint(&w, cheque_json.len);
     try w.writeAll(cheque_json);
 
-    return try allocator.realloc(buf, fbs.pos);
+    return try allocator.realloc(buf, w.end);
 }
 
 /// Send a SignedCheque to bee on an already-negotiated swap stream. Caller
@@ -183,10 +182,10 @@ const testing = std.testing;
 /// Helper for tests: hand-build a Headers protobuf with an `exchange` and an
 /// optional `deduction` field, both as big-endian uint256.
 fn buildHeadersBuf(allocator: std.mem.Allocator, exchange: u256, deduction: ?u256) ![]u8 {
-    var out: std.ArrayList(u8) = .{};
+    var out: std.ArrayList(u8) = .empty;
     defer out.deinit(allocator);
 
-    var inner: std.ArrayList(u8) = .{};
+    var inner: std.ArrayList(u8) = .empty;
     defer inner.deinit(allocator);
 
     const writeHeader = struct {
@@ -277,7 +276,7 @@ test "swap: parseSettlementHeaders — missing deduction defaults to 0" {
 test "swap: parseSettlementHeaders — missing exchange is an error" {
     // Build a Headers buf containing only `deduction` — bee never does this
     // in practice but we should still reject it.
-    var inner: std.ArrayList(u8) = .{};
+    var inner: std.ArrayList(u8) = .empty;
     defer inner.deinit(testing.allocator);
     try inner.append(testing.allocator, 0x0A);
     try appendVarint(testing.allocator, &inner, FIELD_NAME_DEDUCTION.len);
@@ -286,7 +285,7 @@ test "swap: parseSettlementHeaders — missing exchange is an error" {
     try appendVarint(testing.allocator, &inner, 1);
     try inner.append(testing.allocator, 0x07);
 
-    var outer: std.ArrayList(u8) = .{};
+    var outer: std.ArrayList(u8) = .empty;
     defer outer.deinit(testing.allocator);
     try outer.append(testing.allocator, 0x0A);
     try appendVarint(testing.allocator, &outer, inner.items.len);

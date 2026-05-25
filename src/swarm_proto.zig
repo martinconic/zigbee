@@ -54,9 +54,9 @@ pub fn readDelimited(allocator: std.mem.Allocator, stream: *yamux.Stream, max_si
 /// Writes a varint length prefix + payload.
 pub fn writeDelimited(stream: *yamux.Stream, payload: []const u8) !void {
     var len_buf: [10]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&len_buf);
-    try proto.writeVarint(fbs.writer(), payload.len);
-    try stream.writeAll(fbs.getWritten());
+    var w = std.Io.Writer.fixed(&len_buf);
+    try proto.writeVarint(&w, payload.len);
+    try stream.writeAll(w.buffered());
     if (payload.len > 0) try stream.writeAll(payload);
 }
 

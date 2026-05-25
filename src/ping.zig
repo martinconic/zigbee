@@ -10,6 +10,7 @@
 const std = @import("std");
 const yamux = @import("yamux.zig");
 const multistream = @import("multistream.zig");
+const io_mod = @import("io.zig");
 
 pub const PROTOCOL_ID = "/ipfs/ping/1.0.0";
 const PING_SIZE = 32;
@@ -45,9 +46,9 @@ pub fn ping(stream: *yamux.Stream) !u64 {
     try multistream.selectOne(stream, PROTOCOL_ID);
 
     var nonce: [PING_SIZE]u8 = undefined;
-    std.crypto.random.bytes(&nonce);
+    io_mod.randomBytes(&nonce);
 
-    const start = std.time.nanoTimestamp();
+    const start = io_mod.nowNs();
     try stream.writeAll(&nonce);
 
     var echo: [PING_SIZE]u8 = undefined;
@@ -57,7 +58,7 @@ pub fn ping(stream: *yamux.Stream) !u64 {
         if (n == 0) return Error.EndOfStream;
         read_total += n;
     }
-    const elapsed = std.time.nanoTimestamp() - start;
+    const elapsed = io_mod.nowNs() - start;
 
     if (!std.mem.eql(u8, &nonce, &echo)) return Error.PingMismatch;
     return @intCast(elapsed);

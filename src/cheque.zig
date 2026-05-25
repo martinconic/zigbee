@@ -233,7 +233,7 @@ fn parseU256Decimal(s: []const u8) !u256 {
 
 /// Marshal a SignedCheque as the wire JSON bee expects. Caller frees.
 pub fn marshalJson(allocator: std.mem.Allocator, signed: *const SignedCheque) ![]u8 {
-    var buf: std.ArrayList(u8) = .{};
+    var buf: std.ArrayList(u8) = .empty;
     defer buf.deinit(allocator);
 
     var addr_hex: [42]u8 = undefined;

@@ -4,9 +4,10 @@
 **Next on `main` (0.6.0 milestone):** push — postage stamp parser + verifier + issuer + `/swarm/pushsync/1.3.1` initiator + `POST /bytes` and `POST /bzz` upload API. ~12 work-weeks FTE. Per-target chain integration stays an outer ring (operator-side provisioning), not zigbee core.
 **Headline focus:** **IoT / embedded.** zigbee is the small-footprint Bee client family for devices that can't run Go bee. Locked in 2026-04-28; framing detail in [`iot-roadmap.html`](iot-roadmap.html).
 **Strategy references:** [`iot-roadmap.html`](iot-roadmap.html) (IoT-specific roadmap) + [`strategy.html`](strategy.html) (full strategic dossier)
-**Date last refreshed:** 2026-04-29
-**Tests:** 113/113 unit tests pass (`zig build test --summary all`)
-**Source size:** ~11,500 lines of Zig across 34 files in `zigbee/src/` (added in 0.5.0: `src/store.zig`, `src/encryption.zig`, `src/cheque.zig`, `src/swap.zig`, `src/accounting.zig`, `src/credential.zig`)
+**Date last refreshed:** 2026-05-25
+**Toolchain:** **Zig 0.16.0** (migrated from 0.15.2 on 2026-05-25 — Writergate `std.Io.Reader`/`Writer`, the `std.Io` interface for fs/net/sync, `ArrayList` unmanaged, `std.crypto.random`/`std.posix.{socket,getenv,getsockname}`/`std.time.nanoTimestamp` removals). A process-wide blocking `Io` lives in `src/io.zig`; `src/tcp.zig` wraps `std.Io.net.Stream` to keep the protocol stack's `.read`/`.writeAll` interface. `minimum_zig_version` and CI (`mlugg/setup-zig`) both pin 0.16.0.
+**Tests:** 113/113 unit tests pass (`zig build test --summary all`); `zig build` (exe) green
+**Source size:** ~12,400 lines of Zig across 36 files in `zigbee/src/` (0.5.0 added `store`/`encryption`/`cheque`/`swap`/`accounting`/`credential`; 0.16 migration added `io.zig` + `tcp.zig`)
 **Repository:** https://github.com/martinconic/zigbee (public, BSD-3-Clause)
 **Live status against bee:** verified end-to-end against a local bee
 (`bee/v2.7.2-rc1`, sepolia testnet config) and against the public
@@ -22,6 +23,54 @@ testnet bootnode at `167.235.96.31:32491`. SWAP cheques live-verified
 Single-page guide for picking the project up cold. If a session crashes,
 your machine reboots, or you come back in a week — read this section
 first.
+
+### Naming under reconsideration (2026-05-15)
+
+The `zigbee` name is **under active reconsideration** — no code/repo
+changes yet, everything in the tree still says `zigbee`. Reasons:
+
+1. **Name collision with the Zigbee IoT protocol** (Zigbee Alliance /
+   Connectivity Standards Alliance — wireless mesh used by Nest, Hue,
+   smart-home). Acute because both the protocol and this project target
+   IoT/embedded. SEO is broken; gets worse as ESP32 work lands.
+2. **Framing**: this is a *Swarm client*, NOT a bee derivative. Bee
+   (golang) is the reference Swarm client; this is another Swarm
+   client. Multi-client analogue is Ethereum (geth / reth / erigon /
+   nethermind / besu) — they don't all call themselves "geth-something."
+   Externally validated by a Swarm-network stakeholder (May 2026 chat)
+   pushing for "microclients" and "lego pieces" over bee rewrites.
+
+**Decisions already made (don't re-litigate):** no `-bee` suffix
+names (anchors to bee-the-binary), no `-ifer` endings (`mellifer`
+echoes "lucifer"), language-prefix names (`zwarm` / `zigswarm`)
+deprioritised (multi-client convention drifted away from that).
+
+**Current shortlist (top 3):**
+
+1. **`pollen`** — what bees gather grain-by-grain from many flowers and
+   carry home. Direct analogue to chunks of data retrieved from many
+   peers and reassembled. Short, brandable, gender-neutral, no major
+   IoT/network collision.
+2. **`nectar`** — same metaphor, liquid-drop version.
+3. **`scopa`** — bee's pollen-carrying hair patch (Latin); scientific
+   / infrastructure feel like `reth`/`besu`; four letters.
+
+Also on the bench: **`hutch`** (Hutch the Honeybee — character fit is
+uncannily exact: tiny bee navigating a network) for indie/approachable
+energy if the metaphor direction doesn't land.
+
+**Open before deciding:** availability check across GitHub / npm /
+crates.io / PyPI / general web. Final pick.
+
+**When the rename actually happens** (mechanical, not yet authorised):
+touches repo name (GitHub auto-redirects from `martinconic/zigbee`),
+binary names across the 6 release artifacts + `SHA256SUMS`, Zig module
+name, CLI command, default config dir (`~/.zigbee/` → `~/.<new>/`),
+every doc (README, CHANGELOG, all `docs/release-notes/*.md`, this
+file, `plan.md`, `install.html`, `strategy.html`, `iot-roadmap.html`),
+`build.zig.zon` `.name`, GH Actions artifact names in
+`.github/workflows/release.yml`. Existing v0.4.x / v0.5.x tags stay
+as-is for history; new releases ship under the new name.
 
 ### Where everything lives
 

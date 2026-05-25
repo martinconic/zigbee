@@ -69,6 +69,7 @@
 //! happens in `src/p2p.zig`.
 
 const std = @import("std");
+const io_mod = @import("io.zig");
 const cheque = @import("cheque.zig");
 
 /// Number of chunks we'll let accumulate before triggering a cheque.
@@ -126,7 +127,7 @@ pub const Accounting = struct {
     /// Null = ephemeral mode; no persistence (no chequebook to bind to).
     /// We own this slice when non-null.
     state_path: ?[]u8,
-    mtx: std.Thread.Mutex = .{},
+    mtx: std.Io.Mutex = .init,
     /// peer overlay → state. Owned. Caller of openOrCreate hands us the
     /// allocator; we use it for both keys (none) and value pointers.
     map: std.AutoHashMapUnmanaged([PEER_OVERLAY_LEN]u8, *PeerState) = .{},
@@ -154,10 +155,7 @@ pub const Accounting = struct {
             // lives in `~/.zigbee/` which already exists, but a user pointing
             // `--chequebook` at a fresh path needs us to mkdir -p.
             if (std.fs.path.dirname(p)) |dir| {
-                std.fs.cwd().makePath(dir) catch |e| switch (e) {
-                    error.PathAlreadyExists => {},
-                    else => return e,
-                };
+                try std.Io.Dir.cwd().createDirPath(io_mod.get(), dir);
             }
             self.loadStateFile() catch |e| switch (e) {
                 error.FileNotFound => {}, // fresh start, no prior state
@@ -179,8 +177,8 @@ pub const Accounting = struct {
     /// now issue a cheque to this peer (the trigger threshold has been
     /// crossed since the last cheque).
     pub fn charge(self: *Accounting, peer: [PEER_OVERLAY_LEN]u8, n_chunks: u64) !bool {
-        self.mtx.lock();
-        defer self.mtx.unlock();
+        self.mtx.lockUncancelable(io_mod.get());
+        defer self.mtx.unlock(io_mod.get());
 
         const ps = try self.getOrCreate(peer);
         ps.chunks_since_last_cheque += n_chunks;
@@ -203,8 +201,8 @@ pub const Accounting = struct {
         beneficiary: [20]u8,
         delta_wei: u256,
     ) !cheque.Cheque {
-        self.mtx.lock();
-        defer self.mtx.unlock();
+        self.mtx.lockUncancelable(io_mod.get());
+        defer self.mtx.unlock(io_mod.get());
 
         const ps = try self.getOrCreate(peer);
         const new_cumulative = ps.last_cumulative_payout_wei + delta_wei;
@@ -232,16 +230,16 @@ pub const Accounting = struct {
     /// chunk counter. The persistent cumulative was already written by
     /// buildCheque.
     pub fn markChequeSent(self: *Accounting, peer: [PEER_OVERLAY_LEN]u8) void {
-        self.mtx.lock();
-        defer self.mtx.unlock();
+        self.mtx.lockUncancelable(io_mod.get());
+        defer self.mtx.unlock(io_mod.get());
         if (self.map.get(peer)) |ps| ps.chunks_since_last_cheque = 0;
     }
 
     /// Read-only snapshot of the per-peer state. Returns null if we've never
     /// charged this peer. Mostly for tests + observability.
     pub fn snapshot(self: *Accounting, peer: [PEER_OVERLAY_LEN]u8) ?PeerStateSnapshot {
-        self.mtx.lock();
-        defer self.mtx.unlock();
+        self.mtx.lockUncancelable(io_mod.get());
+        defer self.mtx.unlock(io_mod.get());
         const ps = self.map.get(peer) orelse return null;
         return .{
             .chunks_since_last_cheque = ps.chunks_since_last_cheque,
@@ -265,8 +263,8 @@ pub const Accounting = struct {
         peer: [PEER_OVERLAY_LEN]u8,
         cumulative_wei: u256,
     ) !void {
-        self.mtx.lock();
-        defer self.mtx.unlock();
+        self.mtx.lockUncancelable(io_mod.get());
+        defer self.mtx.unlock(io_mod.get());
 
         const ps = try self.getOrCreate(peer);
         if (cumulative_wei <= ps.last_cumulative_payout_wei) return;
@@ -288,7 +286,7 @@ pub const Accounting = struct {
     /// Serialize the entire peers map to a JSON document and atomically
     /// replace the state file. Caller holds `self.mtx`.
     fn writeStateFileLocked(self: *Accounting, path: []const u8) !void {
-        var body: std.ArrayList(u8) = .{};
+        var body: std.ArrayList(u8) = .empty;
         defer body.deinit(self.allocator);
 
         try body.appendSlice(self.allocator, "{\"version\":1,\"peers\":{");
@@ -314,9 +312,7 @@ pub const Accounting = struct {
 
     fn loadStateFile(self: *Accounting) !void {
         const path = self.state_path.?;
-        const f = try std.fs.cwd().openFile(path, .{});
-        defer f.close();
-        const data = try f.readToEndAlloc(self.allocator, 1024 * 1024);
+        const data = try std.Io.Dir.cwd().readFileAlloc(io_mod.get(), path, self.allocator, .limited(1024 * 1024));
         defer self.allocator.free(data);
 
         var parsed = std.json.parseFromSlice(std.json.Value, self.allocator, data, .{}) catch
@@ -385,16 +381,18 @@ fn parseU256Decimal(s: []const u8) !u256 {
 /// Atomic write: tempfile + fsync + rename. Same pattern as identity.zig and
 /// store.zig.
 fn atomicWrite(allocator: std.mem.Allocator, path: []const u8, data: []const u8) !void {
+    const io = io_mod.get();
+    const cwd = std.Io.Dir.cwd();
     const tmp = try std.fmt.allocPrint(allocator, "{s}.tmp", .{path});
     defer allocator.free(tmp);
 
     {
-        const f = try std.fs.cwd().createFile(tmp, .{ .truncate = true });
-        defer f.close();
-        try f.writeAll(data);
-        try f.sync();
+        const f = try cwd.createFile(io, tmp, .{ .truncate = true });
+        defer f.close(io);
+        try f.writeStreamingAll(io, data);
+        try f.sync(io);
     }
-    try std.fs.cwd().rename(tmp, path);
+    try cwd.rename(tmp, cwd, path, io);
 }
 
 /// Derive the accounting state-file path from a chequebook-credential path.
@@ -421,9 +419,7 @@ const testing = std.testing;
 const TEST_DELTA_WEI: u256 = 100_000_000_000_000;
 
 fn tmpStatePath(allocator: std.mem.Allocator, dir: *std.testing.TmpDir) ![]u8 {
-    const root = try dir.dir.realpathAlloc(allocator, ".");
-    defer allocator.free(root);
-    return std.fs.path.join(allocator, &.{ root, "chequebook.state.json" });
+    return std.fs.path.join(allocator, &.{ ".zig-cache", "tmp", dir.sub_path[0..], "chequebook.state.json" });
 }
 
 test "accounting: charge below trigger does not signal issue" {

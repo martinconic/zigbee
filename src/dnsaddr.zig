@@ -12,6 +12,7 @@
 
 const std = @import("std");
 const multiaddr = @import("multiaddr.zig");
+const io_mod = @import("io.zig");
 
 pub const Error = error{
     DnsFormatError,
@@ -46,7 +47,7 @@ pub fn resolve(parent_allocator: std.mem.Allocator, host: []const u8) !ResolvedL
     errdefer arena.deinit();
     const arena_allocator = arena.allocator();
 
-    var out: std.ArrayList([]const u8) = .{};
+    var out: std.ArrayList([]const u8) = .empty;
     try resolveInto(arena_allocator, host, 0, &out);
 
     return ResolvedList{
@@ -90,40 +91,40 @@ fn queryTxt(
     qname: []const u8,
     out_answers: [][]const u8,
 ) !usize {
-    const ns_addr = try readSystemNameserver();
+    const io = io_mod.get();
+    const ns_addr = try readSystemNameserver(allocator);
 
     var pkt: [512]u8 = undefined;
     const query = try buildQuery(qname, &pkt);
 
-    const sock = try std.posix.socket(std.posix.AF.INET, std.posix.SOCK.DGRAM, std.posix.IPPROTO.UDP);
-    defer std.posix.close(sock);
+    // Ephemeral UDP socket bound to the unspecified IPv4 address. 0.16 routes
+    // datagram I/O through std.Io.net (std.posix.socket/sendto/recvfrom are gone).
+    const bind_addr: std.Io.net.IpAddress = .{ .ip4 = .{ .bytes = .{ 0, 0, 0, 0 }, .port = 0 } };
+    const sock = try bind_addr.bind(io, .{ .mode = .dgram, .protocol = .udp });
+    defer sock.close(io);
 
-    // 5-second timeout (RCVTIMEO).
-    const tv = std.posix.timeval{ .sec = 5, .usec = 0 };
-    try std.posix.setsockopt(sock, std.posix.SOL.SOCKET, std.posix.SO.RCVTIMEO, std.mem.asBytes(&tv));
-
-    _ = std.posix.sendto(sock, query, 0, &ns_addr.any, ns_addr.getOsSockLen()) catch return Error.NoNameservers;
+    sock.send(io, &ns_addr, query) catch return Error.NoNameservers;
 
     var resp: [4096]u8 = undefined;
-    const got = std.posix.recvfrom(sock, &resp, 0, null, null) catch |e| switch (e) {
-        error.WouldBlock => return Error.ResolutionTimeout,
+    const recv_timeout: std.Io.Timeout = .{ .duration = .{ .raw = .fromNanoseconds(QUERY_TIMEOUT_NS), .clock = .awake } };
+    const msg = sock.receiveTimeout(io, &resp, recv_timeout) catch |e| switch (e) {
+        error.Timeout => return Error.ResolutionTimeout,
         else => return e,
     };
 
-    return parseTxtResponse(allocator, resp[0..got], out_answers);
+    return parseTxtResponse(allocator, msg.data, out_answers);
 }
 
-fn readSystemNameserver() !std.net.Address {
-    const file = try std.fs.openFileAbsolute("/etc/resolv.conf", .{});
-    defer file.close();
-    var buf: [4096]u8 = undefined;
-    const n = try file.read(&buf);
-    var it = std.mem.tokenizeScalar(u8, buf[0..n], '\n');
+fn readSystemNameserver(allocator: std.mem.Allocator) !std.Io.net.IpAddress {
+    const data = std.Io.Dir.cwd().readFileAlloc(io_mod.get(), "/etc/resolv.conf", allocator, .limited(64 * 1024)) catch
+        return Error.NoNameservers;
+    defer allocator.free(data);
+    var it = std.mem.tokenizeScalar(u8, data, '\n');
     while (it.next()) |line| {
         const trimmed = std.mem.trim(u8, line, " \t\r");
         if (std.mem.startsWith(u8, trimmed, "nameserver")) {
             const rest = std.mem.trim(u8, trimmed["nameserver".len..], " \t");
-            return std.net.Address.parseIp(rest, 53);
+            return std.Io.net.IpAddress.parse(rest, 53) catch return Error.NoNameservers;
         }
     }
     return Error.NoNameservers;
@@ -134,7 +135,7 @@ fn buildQuery(qname: []const u8, out: []u8) ![]u8 {
 
     // 12-byte header: ID, flags=0x0100 (RD set), QDCOUNT=1, ANCOUNT=ARCOUNT=NSCOUNT=0.
     var rng: [2]u8 = undefined;
-    std.crypto.random.bytes(&rng);
+    io_mod.randomBytes(&rng);
     out[0] = rng[0];
     out[1] = rng[1];
     std.mem.writeInt(u16, out[2..4], 0x0100, .big);
@@ -208,7 +209,7 @@ fn parseTxtResponse(allocator: std.mem.Allocator, msg: []const u8, out: [][]cons
 
         // TXT RDATA = sequence of <length-byte><string> chunks. We
         // concatenate them into a single output string per record.
-        var txt: std.ArrayList(u8) = .{};
+        var txt: std.ArrayList(u8) = .empty;
         defer txt.deinit(allocator);
 
         var off: usize = 0;
@@ -281,20 +282,36 @@ test "parseTxtResponse decodes a synthesized response" {
     std.mem.writeInt(u16, msg[10..12], 0, .big);
     p = 12;
     // QNAME: foo.bar
-    msg[p] = 3; p += 1; @memcpy(msg[p..][0..3], "foo"); p += 3;
-    msg[p] = 3; p += 1; @memcpy(msg[p..][0..3], "bar"); p += 3;
-    msg[p] = 0; p += 1;
-    std.mem.writeInt(u16, msg[p..][0..2], 16, .big); p += 2; // type TXT
-    std.mem.writeInt(u16, msg[p..][0..2], 1, .big); p += 2; // class IN
+    msg[p] = 3;
+    p += 1;
+    @memcpy(msg[p..][0..3], "foo");
+    p += 3;
+    msg[p] = 3;
+    p += 1;
+    @memcpy(msg[p..][0..3], "bar");
+    p += 3;
+    msg[p] = 0;
+    p += 1;
+    std.mem.writeInt(u16, msg[p..][0..2], 16, .big);
+    p += 2; // type TXT
+    std.mem.writeInt(u16, msg[p..][0..2], 1, .big);
+    p += 2; // class IN
     // Answer: same name (compressed pointer to offset 12), type TXT, class IN, TTL=300, rdlen.
-    std.mem.writeInt(u16, msg[p..][0..2], 0xC00C, .big); p += 2;
-    std.mem.writeInt(u16, msg[p..][0..2], 16, .big); p += 2;
-    std.mem.writeInt(u16, msg[p..][0..2], 1, .big); p += 2;
-    std.mem.writeInt(u32, msg[p..][0..4], 300, .big); p += 4;
+    std.mem.writeInt(u16, msg[p..][0..2], 0xC00C, .big);
+    p += 2;
+    std.mem.writeInt(u16, msg[p..][0..2], 16, .big);
+    p += 2;
+    std.mem.writeInt(u16, msg[p..][0..2], 1, .big);
+    p += 2;
+    std.mem.writeInt(u32, msg[p..][0..4], 300, .big);
+    p += 4;
     const txt = "hello world";
-    std.mem.writeInt(u16, msg[p..][0..2], @intCast(1 + txt.len), .big); p += 2;
-    msg[p] = @intCast(txt.len); p += 1;
-    @memcpy(msg[p..][0..txt.len], txt); p += txt.len;
+    std.mem.writeInt(u16, msg[p..][0..2], @intCast(1 + txt.len), .big);
+    p += 2;
+    msg[p] = @intCast(txt.len);
+    p += 1;
+    @memcpy(msg[p..][0..txt.len], txt);
+    p += txt.len;
 
     var answers: [4][]const u8 = undefined;
     const n = try parseTxtResponse(allocator, msg[0..p], &answers);

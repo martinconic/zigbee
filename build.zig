@@ -61,10 +61,10 @@ fn buildSecp256k1(
             .link_libc = true,
         }),
     });
-    lib.addIncludePath(b.path("vendor/secp256k1"));
-    lib.addIncludePath(b.path("vendor/secp256k1/src"));
-    lib.addIncludePath(b.path("vendor/secp256k1/include"));
-    lib.addCSourceFiles(.{
+    lib.root_module.addIncludePath(b.path("vendor/secp256k1"));
+    lib.root_module.addIncludePath(b.path("vendor/secp256k1/src"));
+    lib.root_module.addIncludePath(b.path("vendor/secp256k1/include"));
+    lib.root_module.addCSourceFiles(.{
         .files = &.{
             "vendor/secp256k1/src/secp256k1.c",
             "vendor/secp256k1/src/precomputed_ecmult.c",
@@ -81,6 +81,6 @@ fn buildSecp256k1(
 }
 
 fn linkSecp(step: *std.Build.Step.Compile, secp: *std.Build.Step.Compile) void {
-    step.linkLibrary(secp);
-    step.addIncludePath(secp.root_module.owner.path("vendor/secp256k1/include"));
+    step.root_module.linkLibrary(secp);
+    step.root_module.addIncludePath(secp.root_module.owner.path("vendor/secp256k1/include"));
 }

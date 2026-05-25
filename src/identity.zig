@@ -1,5 +1,6 @@
 const std = @import("std");
 const crypto = @import("crypto.zig");
+const io_mod = @import("io.zig");
 
 pub const secp = @cImport({
     @cInclude("secp256k1.h");
@@ -26,7 +27,7 @@ pub const Identity = struct {
 
         // Generate a valid private key
         while (true) {
-            std.crypto.random.bytes(&private_key);
+            io_mod.randomBytes(&private_key);
             if (secp.secp256k1_ec_seckey_verify(ctx, &private_key) == 1) {
                 break;
             }
@@ -95,7 +96,7 @@ pub const Identity = struct {
         path: []const u8,
         nonce_out: *[32]u8,
     ) !Identity {
-        if (readKeyAndNonce(path)) |kn| {
+        if (readKeyAndNonce(allocator, path)) |kn| {
             @memcpy(nonce_out, &kn.nonce);
             return try fromPrivateKey(kn.key);
         } else |e| switch (e) {
@@ -105,7 +106,7 @@ pub const Identity = struct {
 
         // Generate a fresh identity AND a fresh nonce; persist both.
         const id = try Identity.generate();
-        std.crypto.random.bytes(nonce_out);
+        io_mod.randomBytes(nonce_out);
         try writeKeyAndNonceAtomic(allocator, path, id.private_key, nonce_out.*);
         return id;
     }
@@ -160,20 +161,22 @@ const KeyAndNonce = struct {
 /// Read the 64-byte (key ‖ nonce) blob from `path`. Errors:
 ///   error.FileNotFound  — file doesn't exist (caller generates fresh)
 ///   error.InvalidKeyFile — file exists but isn't exactly 64 bytes
-fn readKeyAndNonce(path: []const u8) !KeyAndNonce {
-    var file = std.fs.cwd().openFile(path, .{}) catch |e| switch (e) {
+fn readKeyAndNonce(allocator: std.mem.Allocator, path: []const u8) !KeyAndNonce {
+    const io = io_mod.get();
+    // Read up to 65 bytes (1 byte of slack) so a wrong-sized file is rejected
+    // rather than silently truncated. A file ≥65 bytes trips StreamTooLong,
+    // which we treat the same as "malformed".
+    const data = std.Io.Dir.cwd().readFileAlloc(io, path, allocator, .limited(65)) catch |e| switch (e) {
         error.FileNotFound => return error.FileNotFound,
+        error.StreamTooLong => return error.InvalidKeyFile,
         else => return e,
     };
-    defer file.close();
-
-    var buf: [65]u8 = undefined; // 1 byte slack to detect oversize
-    const n = try file.readAll(&buf);
-    if (n != 64) return error.InvalidKeyFile;
+    defer allocator.free(data);
+    if (data.len != 64) return error.InvalidKeyFile;
 
     var out: KeyAndNonce = undefined;
-    @memcpy(&out.key, buf[0..32]);
-    @memcpy(&out.nonce, buf[32..64]);
+    @memcpy(&out.key, data[0..32]);
+    @memcpy(&out.nonce, data[32..64]);
     return out;
 }
 
@@ -187,13 +190,14 @@ fn writeKeyAndNonceAtomic(
     key: [32]u8,
     nonce: [32]u8,
 ) !void {
+    const io = io_mod.get();
+    const cwd = std.Io.Dir.cwd();
+
     // Ensure the containing directory exists. We don't fight with its
-    // mode — file-level 0o600 is what protects the key.
+    // mode — file-level 0o600 is what protects the key. createDirPath is
+    // mkdir -p: idempotent when the directory already exists.
     if (std.fs.path.dirname(path)) |dir| {
-        std.fs.cwd().makePath(dir) catch |e| switch (e) {
-            error.PathAlreadyExists => {},
-            else => return e,
-        };
+        try cwd.createDirPath(io, dir);
     }
 
     const tmp_path = try std.fmt.allocPrint(allocator, "{s}.tmp", .{path});
@@ -201,39 +205,30 @@ fn writeKeyAndNonceAtomic(
 
     // Write the temp file (64 bytes: 32-byte key ‖ 32-byte nonce).
     // File mode is whatever your umask permits (typically 0644 or
-    // 0664). zigbee can't reliably tighten it via std.posix.fchmod
-    // in this Zig version (0.15) — the stdlib treats a few possible
-    // syscall returns as `unreachable` on tmpfs / atypical mounts.
-    // If you want strict 0600 (e.g. multi-user host), set
+    // 0664). If you want strict 0600 (e.g. multi-user host), set
     // `umask 0077` before launching, OR
     // `chmod 600 ~/.zigbee/identity.key` after first run.
     {
-        var tmp = try std.fs.cwd().createFile(tmp_path, .{ .truncate = true });
-        defer tmp.close();
-        try tmp.writeAll(&key);
-        try tmp.writeAll(&nonce);
-        try tmp.sync();
+        var tmp = try cwd.createFile(io, tmp_path, .{ .truncate = true });
+        defer tmp.close(io);
+        try tmp.writeStreamingAll(io, &key);
+        try tmp.writeStreamingAll(io, &nonce);
+        try tmp.sync(io);
     }
 
     // Atomic rename — POSIX guarantees the target is either fully
-    // old or fully new, never partial.
-    //
-    // For belt-and-braces durability we'd also fsync the containing
-    // directory so the new dirent metadata survives a power loss
-    // immediately after rename, but Zig 0.15's std.posix.fsync
-    // treats a directory fd as `unreachable` (BADF/INVAL/ROFS).
-    // Modern filesystems (ext4, xfs, btrfs, apfs) flush rename
-    // metadata as a side effect, so the missing dir-fsync is at
-    // worst a few-ms-of-power-loss exposure on the very-first run.
-    // For an identity key — generated once and read forever — the
-    // tradeoff is acceptable.
-    try std.fs.cwd().rename(tmp_path, path);
+    // old or fully new, never partial. (We skip an explicit
+    // directory fsync; modern filesystems flush rename metadata as a
+    // side effect, and an identity key is written once and read forever.)
+    try cwd.rename(tmp_path, cwd, path, io);
 }
 
 /// Default identity-file path: `$HOME/.zigbee/identity.key`. Caller
 /// owns the returned slice.
 pub fn defaultIdentityPath(allocator: std.mem.Allocator) ![]const u8 {
-    const home = std.posix.getenv("HOME") orelse return error.NoHomeEnv;
+    // 0.16 removed std.posix.getenv; use libc's getenv (we already link libc
+    // for secp256k1). Returns a NUL-terminated C string.
+    const home = std.mem.span(std.c.getenv("HOME") orelse return error.NoHomeEnv);
     return try std.fs.path.join(allocator, &.{ home, ".zigbee", "identity.key" });
 }
 
@@ -253,12 +248,14 @@ pub fn overlayFromEthereumAddress(
 
 test "loadOrCreate: round-trips key + nonce, second call returns the same identity" {
     const allocator = std.testing.allocator;
+    const io = io_mod.get();
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    const path = try tmp.dir.realpathAlloc(allocator, ".");
-    defer allocator.free(path);
-    const key_path = try std.fs.path.join(allocator, &.{ path, "identity.key" });
+    // tmpDir lives at .zig-cache/tmp/<sub_path> relative to the test cwd;
+    // loadOrCreate resolves paths via the same cwd, so a relative key_path
+    // is consistent (realpathAlloc was removed in 0.16).
+    const key_path = try std.fs.path.join(allocator, &.{ ".zig-cache", "tmp", tmp.sub_path[0..], "identity.key" });
     defer allocator.free(key_path);
 
     // First call: file doesn't exist → generates + persists.
@@ -273,29 +270,28 @@ test "loadOrCreate: round-trips key + nonce, second call returns the same identi
     try std.testing.expectEqualSlices(u8, &nonce1, &nonce2);
 
     // Sanity: file is exactly 64 bytes (32 key + 32 nonce).
-    var f = try std.fs.cwd().openFile(key_path, .{});
-    defer f.close();
-    const stat = try f.stat();
+    var f = try std.Io.Dir.cwd().openFile(io, key_path, .{});
+    defer f.close(io);
+    const stat = try f.stat(io);
     try std.testing.expectEqual(@as(u64, 64), stat.size);
 }
 
 test "loadOrCreate: rejects malformed key file (wrong size)" {
     const allocator = std.testing.allocator;
+    const io = io_mod.get();
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    const path = try tmp.dir.realpathAlloc(allocator, ".");
-    defer allocator.free(path);
-    const key_path = try std.fs.path.join(allocator, &.{ path, "bad.key" });
+    const key_path = try std.fs.path.join(allocator, &.{ ".zig-cache", "tmp", tmp.sub_path[0..], "bad.key" });
     defer allocator.free(key_path);
 
     // Pre-write a 32-byte file (right size for the OLD format, wrong
     // for the new 64-byte key+nonce format — mainly here to confirm
     // we reject anything that isn't exactly 64 bytes).
     {
-        var f = try std.fs.cwd().createFile(key_path, .{});
-        defer f.close();
-        try f.writeAll(&[_]u8{0xAA} ** 32);
+        var f = try std.Io.Dir.cwd().createFile(io, key_path, .{});
+        defer f.close(io);
+        try f.writeStreamingAll(io, &[_]u8{0xAA} ** 32);
     }
 
     var nonce: [32]u8 = undefined;

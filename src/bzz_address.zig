@@ -291,8 +291,24 @@ test "UnderlayIterator: 0x99-prefixed list of two entries" {
     // /ip4/10.0.0.1/tcp/1634 (8 bytes) + /ip4/192.168.1.2/tcp/1635 (8 bytes)
     const list = [_]u8{
         0x99,
-        8,    0x04, 10,  0,    0,    1,    0x06, 0x06, 0x62,
-        8,    0x04, 192, 168,  1,    2,    0x06, 0x06, 0x63,
+        8,
+        0x04,
+        10,
+        0,
+        0,
+        1,
+        0x06,
+        0x06,
+        0x62,
+        8,
+        0x04,
+        192,
+        168,
+        1,
+        2,
+        0x06,
+        0x06,
+        0x63,
     };
     var it = UnderlayIterator.init(&list);
     const a = (try it.next()) orelse return error.NoEntry;
@@ -333,22 +349,21 @@ test "self-signed BzzAddress round-trips through parse" {
 
     // Encode hive-form BzzAddress (with nonce in the proto).
     var enc_buf: [512]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&enc_buf);
-    const w = fbs.writer();
-    try proto.writeVarint(w, (1 << 3) | 2);
-    try proto.writeVarint(w, underlay.len);
+    var w = std.Io.Writer.fixed(&enc_buf);
+    try proto.writeVarint(&w, (1 << 3) | 2);
+    try proto.writeVarint(&w, underlay.len);
     try w.writeAll(&underlay);
-    try proto.writeVarint(w, (2 << 3) | 2);
-    try proto.writeVarint(w, sig.len);
+    try proto.writeVarint(&w, (2 << 3) | 2);
+    try proto.writeVarint(&w, sig.len);
     try w.writeAll(&sig);
-    try proto.writeVarint(w, (3 << 3) | 2);
-    try proto.writeVarint(w, overlay.len);
+    try proto.writeVarint(&w, (3 << 3) | 2);
+    try proto.writeVarint(&w, overlay.len);
     try w.writeAll(&overlay);
-    try proto.writeVarint(w, (4 << 3) | 2);
-    try proto.writeVarint(w, nonce.len);
+    try proto.writeVarint(&w, (4 << 3) | 2);
+    try proto.writeVarint(&w, nonce.len);
     try w.writeAll(&nonce);
 
-    const v = try parse(testing.allocator, fbs.getWritten(), network_id, null);
+    const v = try parse(testing.allocator, w.buffered(), network_id, null);
     defer v.deinit();
     try testing.expectEqualSlices(u8, &overlay, &v.overlay);
     try testing.expectEqualSlices(u8, &nonce, &v.nonce);
@@ -374,20 +389,19 @@ test "parse rejects an overlay that doesn't match the recovered key" {
     try identity.signEthereum(id.private_key, sd, &sig);
 
     var enc_buf: [512]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&enc_buf);
-    const w = fbs.writer();
-    try proto.writeVarint(w, (1 << 3) | 2);
-    try proto.writeVarint(w, underlay.len);
+    var w = std.Io.Writer.fixed(&enc_buf);
+    try proto.writeVarint(&w, (1 << 3) | 2);
+    try proto.writeVarint(&w, underlay.len);
     try w.writeAll(&underlay);
-    try proto.writeVarint(w, (2 << 3) | 2);
-    try proto.writeVarint(w, sig.len);
+    try proto.writeVarint(&w, (2 << 3) | 2);
+    try proto.writeVarint(&w, sig.len);
     try w.writeAll(&sig);
-    try proto.writeVarint(w, (3 << 3) | 2);
-    try proto.writeVarint(w, bad_overlay.len);
+    try proto.writeVarint(&w, (3 << 3) | 2);
+    try proto.writeVarint(&w, bad_overlay.len);
     try w.writeAll(&bad_overlay);
-    try proto.writeVarint(w, (4 << 3) | 2);
-    try proto.writeVarint(w, nonce.len);
+    try proto.writeVarint(&w, (4 << 3) | 2);
+    try proto.writeVarint(&w, nonce.len);
     try w.writeAll(&nonce);
 
-    try testing.expectError(Error.OverlayMismatch, parse(testing.allocator, fbs.getWritten(), network_id, null));
+    try testing.expectError(Error.OverlayMismatch, parse(testing.allocator, w.buffered(), network_id, null));
 }

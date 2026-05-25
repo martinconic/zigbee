@@ -21,7 +21,7 @@ jobs:
           ref: ${{ inputs.tag || github.ref }}
       - uses: mlugg/setup-zig@v2
         with:
-          version: 0.15.2
+          version: 0.16.0
       - name: Run unit tests
         run: zig build test --summary all
 
@@ -51,7 +51,7 @@ jobs:
           ref: ${{ inputs.tag || github.ref }}
       - uses: mlugg/setup-zig@v2
         with:
-          version: 0.15.2
+          version: 0.16.0
       - name: Build
         run: zig build -Dtarget=${{ matrix.target }} -Doptimize=ReleaseSafe
       - name: Stage artifact

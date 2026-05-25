@@ -88,7 +88,7 @@ pub fn decodeNoiseHandshakePayload(buffer: []const u8) !NoiseHandshakePayload {
         const tag_res = try readVarint(buffer[offset..]);
         offset += tag_res.bytes_read;
         const tag = tag_res.value;
-        
+
         const wire_type = tag & 0x07;
         const field_number = tag >> 3;
 
@@ -132,7 +132,7 @@ pub fn decodeLibp2pPublicKey(buffer: []const u8) !Libp2pPubKey {
         const tag_res = try readVarint(buffer[offset..]);
         offset += tag_res.bytes_read;
         const tag = tag_res.value;
-        
+
         const wire_type = tag & 0x07;
         const field_number = tag >> 3;
 
@@ -144,7 +144,7 @@ pub fn decodeLibp2pPublicKey(buffer: []const u8) !Libp2pPubKey {
             const len_res = try readVarint(buffer[offset..]);
             offset += len_res.bytes_read;
             const len = @as(usize, @intCast(len_res.value));
-            
+
             if (offset + len > buffer.len) return error.BufferTooShort;
             pubkey.data = buffer[offset .. offset + len];
             offset += len;
@@ -223,9 +223,9 @@ test "varint roundtrip across the previously-overflowing boundary" {
     const values = [_]u64{ 0, 127, 128, 0x1FFFFFFF, 0xFFFFFFFFFF, std.math.maxInt(u64) };
     for (values) |v| {
         var buf: [10]u8 = undefined;
-        var fbs = std.io.fixedBufferStream(&buf);
-        try writeVarint(fbs.writer(), v);
-        const written = fbs.getWritten();
+        var w = std.Io.Writer.fixed(&buf);
+        try writeVarint(&w, v);
+        const written = w.buffered();
         const got = try readVarint(written);
         try std.testing.expectEqual(v, got.value);
         try std.testing.expectEqual(written.len, got.bytes_read);
@@ -240,17 +240,17 @@ test "varint rejects a malformed 11-byte stream" {
 
 test "encode payload" {
     var buf: [1024]u8 = undefined;
-    var fbs = std.io.fixedBufferStream(&buf);
-    
+    var w = std.Io.Writer.fixed(&buf);
+
     const payload = NoiseHandshakePayload{
         .identity_key = &[_]u8{ 0x11, 0x22, 0x33, 0x44 },
         .identity_sig = &[_]u8{ 0xaa, 0xbb },
         .data = &[_]u8{},
     };
-    
-    try encodeNoiseHandshakePayload(fbs.writer(), payload);
+
+    try encodeNoiseHandshakePayload(&w, payload);
     const expected = [_]u8{ 0x0a, 0x04, 0x11, 0x22, 0x33, 0x44, 0x12, 0x02, 0xaa, 0xbb };
-    try std.testing.expectEqualSlices(u8, &expected, fbs.getWritten());
+    try std.testing.expectEqualSlices(u8, &expected, w.buffered());
 }
 
 pub const IdentifyMessage = struct {
@@ -270,35 +270,35 @@ pub fn encodeIdentifyPayload(writer: anytype, payload: IdentifyMessage) !void {
         try writeVarint(writer, payload.public_key.len);
         try writer.writeAll(payload.public_key);
     }
-    
+
     // 2: listenAddrs (repeated bytes)
     for (payload.listen_addrs) |addr| {
         try writeVarint(writer, (2 << 3) | 2);
         try writeVarint(writer, addr.len);
         try writer.writeAll(addr);
     }
-    
+
     // 3: protocols (repeated string)
     for (payload.protocols) |proto_name| {
         try writeVarint(writer, (3 << 3) | 2);
         try writeVarint(writer, proto_name.len);
         try writer.writeAll(proto_name);
     }
-    
+
     // 4: observedAddr (bytes)
     if (payload.observed_addr.len > 0) {
         try writeVarint(writer, (4 << 3) | 2);
         try writeVarint(writer, payload.observed_addr.len);
         try writer.writeAll(payload.observed_addr);
     }
-    
+
     // 5: protocolVersion (string)
     if (payload.protocol_version.len > 0) {
         try writeVarint(writer, (5 << 3) | 2);
         try writeVarint(writer, payload.protocol_version.len);
         try writer.writeAll(payload.protocol_version);
     }
-    
+
     // 6: agentVersion (string)
     if (payload.agent_version.len > 0) {
         try writeVarint(writer, (6 << 3) | 2);

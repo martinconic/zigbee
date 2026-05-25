@@ -13,7 +13,7 @@ options analysis: [`docs/strategy.html`](docs/strategy.html).
 
 Source: https://github.com/martinconic/zigbee
 
-Requirements: Zig 0.15.x and a C toolchain (for the vendored libsecp256k1).
+Requirements: Zig 0.16.x and a C toolchain (for the vendored libsecp256k1).
 
 **New here?** [`docs/install.html`](docs/install.html) is the
 noob-friendly walkthrough from a clean machine to your first
@@ -46,7 +46,7 @@ curl -o myfile.bin "http://127.0.0.1:9090/bzz/<64-char-hex-reference>"
 ```
 
 Want to build from source instead? `git clone` the repo, `zig build`
-(requires Zig 0.15.x and a C toolchain for the vendored libsecp256k1).
+(requires Zig 0.16.x and a C toolchain for the vendored libsecp256k1).
 
 That's the whole user-facing flow. Sanity checks and more variants in
 [`docs/usage.md`](docs/usage.md). The architecture (why no peer address is needed,
@@ -223,7 +223,7 @@ later milestones — see [`docs/plan.md`](docs/plan.md) and
 
 ## Build
 
-Prerequisites: a Zig 0.15.x compiler and a working C toolchain (we vendor
+Prerequisites: a Zig 0.16.x compiler and a working C toolchain (we vendor
 and link `libsecp256k1`).
 
 ```bash
