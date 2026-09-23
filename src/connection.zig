@@ -111,7 +111,9 @@ pub const Connection = struct {
         defer info.deinit();
         identify_stream.close() catch {};
 
-        if (!info.supports(bee_handshake.PROTOCOL_ID)) return Error.PeerProtocolMismatch;
+        // bee >= 2.8.0 speaks only 15.0.0, older bee only 14.0.0.
+        const hs_version: bee_handshake.Version =
+            if (info.supports(bee_handshake.PROTOCOL_ID_V15)) .v15 else if (info.supports(bee_handshake.PROTOCOL_ID_V14)) .v14 else return Error.PeerProtocolMismatch;
 
         // 5. Bee bzz handshake — opens its own stream.
         var our_underlay_buf: [128]u8 = undefined;
@@ -134,16 +136,18 @@ pub const Connection = struct {
         const observed = try peer_id.buildIp4TcpP2pMultiaddrFromPeerId(&observed_buf, ip, port, peer_pid);
 
         const hs_stream = try session.open();
-        try multistream.selectOne(hs_stream, bee_handshake.PROTOCOL_ID);
+        try multistream.selectOne(hs_stream, hs_version.protocolId());
         const hs_info = bee_handshake.initiate(
             allocator,
             hs_stream,
             id,
             .{
+                .version = hs_version,
                 .network_id = network_id,
                 .full_node = false,
                 .nonce = nonce,
                 .underlays = &underlays,
+                .timestamp = io_mod.unixSeconds(),
             },
             observed,
         ) catch |e| {

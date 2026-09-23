@@ -1,26 +1,35 @@
 // Bzz address: the on-the-wire representation of a Swarm peer.
 //
 // Used in two places:
-//   - The bzz handshake (`/swarm/handshake/14.0.0/handshake`), embedded
-//     inside `Ack.Address` — has fields underlay, signature, overlay.
-//     The nonce travels alongside it in `Ack.Nonce`.
-//   - Hive (`/swarm/hive/1.1.0/peers`), where each entry is a complete
-//     `BzzAddress` proto: underlay, signature, overlay, AND nonce.
+//   - The bzz handshake, embedded inside `Ack.Address`.
+//   - Hive, where each entry of `Peers` is a `BzzAddress`.
 //
-// Both share the same signing scheme:
-//   sign_data = "bee-handshake-" || underlay || overlay || networkID_BE_u64
-//   sig       = sign(EIP-191(sign_data)) using secp256k1, 65-byte r||s||v
-// And the recovered public key must satisfy
+// Two wire generations, split at bee v2.8.0:
+//
+//   legacy (handshake 14.0.0, hive 1.1.0):
+//     sign_data = "bee-handshake-" || underlay || overlay || networkID_BE_u64
+//     The handshake's BzzAddress has no nonce; it travels in `Ack.Nonce`.
+//
+//   v15 (handshake 15.0.0, hive 2.0.0) — bee pkg/bzz/address.go:
+//     sign_data = "bee-handshake-" || underlay || overlay || networkID_BE_u64
+//                 || nonce_32 || timestamp_BE_u64 || chequebook_20
+//     Nonce, timestamp and chequebook live in the BzzAddress itself. The
+//     chequebook is always 20 bytes in sign_data (zeros when absent) —
+//     bee normalises it through `common.BytesToAddress` before signing.
+//
+// Both: sig = sign(EIP-191(sign_data)) using secp256k1, 65-byte r||s||v,
+// and the recovered public key must satisfy
 //   overlay  = keccak256(eth_addr ‖ networkID_LE_u64 ‖ nonce_32)
 // where eth_addr = keccak256(uncompressed_pubkey[1..65])[12..32].
 //
 // proto:
 //   message BzzAddress {
-//       bytes Underlay  = 1;
-//       bytes Signature = 2;
-//       bytes Overlay   = 3;
-//       bytes Nonce     = 4;   // present in hive's BzzAddress, absent in
-//                              // the handshake's (carried in Ack.Nonce).
+//       bytes Underlay          = 1;
+//       bytes Signature         = 2;
+//       bytes Overlay           = 3;
+//       bytes Nonce             = 4;  // hive (both), handshake v15 only
+//       int64 Timestamp         = 5;  // v15 only; unix seconds, > 0
+//       bytes ChequebookAddress = 6;  // v15 only; empty or 20 bytes
 //   }
 
 const std = @import("std");
@@ -32,6 +41,15 @@ pub const OVERLAY_LEN: usize = 32;
 pub const NONCE_LEN: usize = 32;
 pub const SIGNATURE_LEN: usize = 65;
 pub const ETH_ADDR_LEN: usize = 20;
+pub const CHEQUEBOOK_LEN: usize = 20;
+
+/// The fields handshake 15.0.0 / hive 2.0.0 append to the signed data.
+/// Passing `null` where a `?V15` is taken selects the legacy scheme.
+pub const V15 = struct {
+    /// Unix seconds. Bee rejects 0 and anything > now + 60 s.
+    timestamp: i64,
+    chequebook: [CHEQUEBOOK_LEN]u8 = [_]u8{0} ** CHEQUEBOOK_LEN,
+};
 
 pub const Error = error{
     InvalidProtobuf,
@@ -49,7 +67,19 @@ pub const Parsed = struct {
     signature: []const u8 = &[_]u8{},
     overlay: []const u8 = &[_]u8{},
     nonce: []const u8 = &[_]u8{}, // empty if the proto didn't include field 4
+    timestamp: i64 = 0, // 0 if the proto didn't include field 5 (legacy)
+    chequebook: []const u8 = &[_]u8{},
 };
+
+/// Normalises a wire chequebook (empty or exactly 20 bytes, as bee
+/// requires) to the 20-byte form that goes into sign_data.
+pub fn chequebookFromWire(bytes: []const u8) ![CHEQUEBOOK_LEN]u8 {
+    var out = [_]u8{0} ** CHEQUEBOOK_LEN;
+    if (bytes.len == 0) return out;
+    if (bytes.len != CHEQUEBOOK_LEN) return Error.InvalidBzzAddress;
+    @memcpy(&out, bytes);
+    return out;
+}
 
 /// Verified, owning copy of a peer's BzzAddress. All slices point into
 /// `_buffer`, which the allocator owns; free via `deinit`.
@@ -82,6 +112,12 @@ pub fn decode(buf: []const u8) !Parsed {
         off += tag.bytes_read;
         const wt = tag.value & 0x07;
         const fnum = tag.value >> 3;
+        if (wt == 0) {
+            const v = try proto.readVarint(buf[off..]);
+            off += v.bytes_read;
+            if (fnum == 5) out.timestamp = @bitCast(v.value);
+            continue;
+        }
         if (wt != 2) return Error.InvalidProtobuf;
         const lr = try proto.readVarint(buf[off..]);
         off += lr.bytes_read;
@@ -92,6 +128,7 @@ pub fn decode(buf: []const u8) !Parsed {
             2 => out.signature = buf[off .. off + ulen],
             3 => out.overlay = buf[off .. off + ulen],
             4 => out.nonce = buf[off .. off + ulen],
+            6 => out.chequebook = buf[off .. off + ulen],
             else => {},
         }
         off += ulen;
@@ -100,20 +137,27 @@ pub fn decode(buf: []const u8) !Parsed {
 }
 
 /// Builds the bytes that the BzzAddress signature covers, before EIP-191
-/// prefixing. Returns the slice into `out`.
-pub fn buildSignData(out: []u8, underlay: []const u8, overlay: [OVERLAY_LEN]u8, network_id: u64) ![]u8 {
-    const total = SIGN_PREFIX.len + underlay.len + OVERLAY_LEN + 8;
-    if (total > out.len) return Error.BufferTooSmall;
-    @memcpy(out[0..SIGN_PREFIX.len], SIGN_PREFIX);
-    @memcpy(out[SIGN_PREFIX.len..][0..underlay.len], underlay);
-    @memcpy(out[SIGN_PREFIX.len + underlay.len ..][0..OVERLAY_LEN], &overlay);
-    std.mem.writeInt(
-        u64,
-        out[SIGN_PREFIX.len + underlay.len + OVERLAY_LEN ..][0..8],
-        network_id,
-        .big,
-    );
-    return out[0..total];
+/// prefixing. `nonce` is only part of sign_data when `v15` is set. Returns
+/// the slice into `out`.
+pub fn buildSignData(
+    out: []u8,
+    underlay: []const u8,
+    overlay: [OVERLAY_LEN]u8,
+    network_id: u64,
+    nonce: [NONCE_LEN]u8,
+    v15: ?V15,
+) ![]u8 {
+    var w = std.Io.Writer.fixed(out);
+    w.writeAll(SIGN_PREFIX) catch return Error.BufferTooSmall;
+    w.writeAll(underlay) catch return Error.BufferTooSmall;
+    w.writeAll(&overlay) catch return Error.BufferTooSmall;
+    w.writeInt(u64, network_id, .big) catch return Error.BufferTooSmall;
+    if (v15) |ext| {
+        w.writeAll(&nonce) catch return Error.BufferTooSmall;
+        w.writeInt(u64, @bitCast(ext.timestamp), .big) catch return Error.BufferTooSmall;
+        w.writeAll(&ext.chequebook) catch return Error.BufferTooSmall;
+    }
+    return w.buffered();
 }
 
 /// Computes the 20-byte Ethereum address from a 33-byte SEC-1 compressed
@@ -138,16 +182,18 @@ pub fn ethAddressFromCompressed(compressed: [33]u8, out: *[ETH_ADDR_LEN]u8) !voi
 
 /// Verifies a BzzAddress signature and returns the recovered Ethereum
 /// address. `nonce` may be the address's own field-4 nonce (hive form) or
-/// a separately-provided one (handshake form, where Ack.Nonce holds it).
+/// a separately-provided one (legacy handshake form, where Ack.Nonce holds
+/// it). `v15` selects the handshake 15.0.0 / hive 2.0.0 sign_data.
 pub fn verify(
     underlay: []const u8,
     overlay: [OVERLAY_LEN]u8,
     signature: [SIGNATURE_LEN]u8,
     nonce: [NONCE_LEN]u8,
     network_id: u64,
+    v15: ?V15,
 ) !struct { eth_address: [ETH_ADDR_LEN]u8, pubkey_compressed: [33]u8 } {
     var sd_buf: [8192]u8 = undefined;
-    const sd = try buildSignData(&sd_buf, underlay, overlay, network_id);
+    const sd = try buildSignData(&sd_buf, underlay, overlay, network_id, nonce, v15);
 
     var pubkey: [33]u8 = undefined;
     identity.recoverEthereum(sd, signature, &pubkey) catch return Error.SignatureRecoveryFailed;
@@ -198,8 +244,9 @@ pub fn parseNoVerify(allocator: std.mem.Allocator, buf: []const u8) !Verified {
 
 /// Decodes + verifies + copies. Caller owns the returned `Verified`; call
 /// `deinit` to free. `external_nonce` is used only when the proto's own
-/// field-4 nonce is empty (handshake form). For hive form, pass any value
-/// and the proto's own nonce wins.
+/// field-4 nonce is empty (legacy handshake form). For hive form, pass any
+/// value and the proto's own nonce wins. A non-zero timestamp (field 5)
+/// selects the v15 sign_data.
 pub fn parse(
     allocator: std.mem.Allocator,
     buf: []const u8,
@@ -225,7 +272,11 @@ pub fn parse(
     var sig: [SIGNATURE_LEN]u8 = undefined;
     @memcpy(&sig, p.signature);
 
-    const verified = try verify(p.underlay, overlay, sig, nonce, network_id);
+    const v15: ?V15 = if (p.timestamp > 0)
+        .{ .timestamp = p.timestamp, .chequebook = try chequebookFromWire(p.chequebook) }
+    else
+        null;
+    const verified = try verify(p.underlay, overlay, sig, nonce, network_id, v15);
 
     // Copy the (possibly multi-)underlay blob into our own buffer.
     const buffer = try allocator.alloc(u8, p.underlay.len);
@@ -324,7 +375,7 @@ test "buildSignData layout matches bee's generateSignData" {
     const overlay: [OVERLAY_LEN]u8 = [_]u8{0xAA} ** OVERLAY_LEN;
     const underlay = [_]u8{ 0x04, 0x7f, 0x00, 0x00, 0x01, 0x06, 0x06, 0x62 };
     var buf: [256]u8 = undefined;
-    const sd = try buildSignData(&buf, &underlay, overlay, 10);
+    const sd = try buildSignData(&buf, &underlay, overlay, 10, [_]u8{0} ** NONCE_LEN, null);
     try testing.expectEqualSlices(u8, "bee-handshake-", sd[0..14]);
     try testing.expectEqualSlices(u8, &underlay, sd[14 .. 14 + underlay.len]);
     try testing.expectEqualSlices(u8, &overlay, sd[14 + underlay.len .. 14 + underlay.len + 32]);
@@ -343,7 +394,7 @@ test "self-signed BzzAddress round-trips through parse" {
 
     const underlay = [_]u8{ 0x04, 0x7f, 0x00, 0x00, 0x01, 0x06, 0x06, 0x62 };
     var sd_buf: [256]u8 = undefined;
-    const sd = try buildSignData(&sd_buf, &underlay, overlay, network_id);
+    const sd = try buildSignData(&sd_buf, &underlay, overlay, network_id, nonce, null);
     var sig: [SIGNATURE_LEN]u8 = undefined;
     try identity.signEthereum(id.private_key, sd, &sig);
 
@@ -384,7 +435,7 @@ test "parse rejects an overlay that doesn't match the recovered key" {
     var bad_overlay: [OVERLAY_LEN]u8 = [_]u8{0xFF} ** OVERLAY_LEN;
     const underlay = [_]u8{ 0x04, 0x7f, 0x00, 0x00, 0x01, 0x06, 0x06, 0x62 };
     var sd_buf: [256]u8 = undefined;
-    const sd = try buildSignData(&sd_buf, &underlay, bad_overlay, network_id);
+    const sd = try buildSignData(&sd_buf, &underlay, bad_overlay, network_id, nonce, null);
     var sig: [SIGNATURE_LEN]u8 = undefined;
     try identity.signEthereum(id.private_key, sd, &sig);
 
@@ -404,4 +455,64 @@ test "parse rejects an overlay that doesn't match the recovered key" {
     try w.writeAll(&nonce);
 
     try testing.expectError(Error.OverlayMismatch, parse(testing.allocator, w.buffered(), network_id, null));
+}
+
+test "buildSignData v15 layout matches bee's generateSignData" {
+    const overlay: [OVERLAY_LEN]u8 = [_]u8{0xAA} ** OVERLAY_LEN;
+    const nonce: [NONCE_LEN]u8 = [_]u8{0x02} ** NONCE_LEN;
+    const underlay = [_]u8{ 0x04, 0x7f, 0x00, 0x00, 0x01, 0x06, 0x06, 0x62 };
+    var buf: [256]u8 = undefined;
+    const sd = try buildSignData(&buf, &underlay, overlay, 10, nonce, .{ .timestamp = 0x0102030405 });
+
+    const legacy_len = 14 + underlay.len + 32 + 8;
+    try testing.expectEqual(legacy_len + NONCE_LEN + 8 + CHEQUEBOOK_LEN, sd.len);
+    try testing.expectEqualSlices(u8, &nonce, sd[legacy_len..][0..NONCE_LEN]);
+    try testing.expectEqualSlices(u8, &.{ 0, 0, 0, 0x01, 0x02, 0x03, 0x04, 0x05 }, sd[legacy_len + NONCE_LEN ..][0..8]);
+    // Absent chequebook still contributes 20 zero bytes.
+    try testing.expectEqualSlices(u8, &([_]u8{0} ** CHEQUEBOOK_LEN), sd[legacy_len + NONCE_LEN + 8 ..]);
+}
+
+test "v15 BzzAddress round-trips through parse and binds the chequebook" {
+    const id = try identity.Identity.generate();
+    const network_id: u64 = 10;
+    const nonce: [NONCE_LEN]u8 = [_]u8{0x77} ** NONCE_LEN;
+    const chequebook: [CHEQUEBOOK_LEN]u8 = [_]u8{0x11} ** CHEQUEBOOK_LEN;
+    const timestamp: i64 = 1_790_000_000;
+
+    var overlay: [OVERLAY_LEN]u8 = undefined;
+    id.overlayAddress(network_id, nonce, &overlay);
+
+    const underlay = [_]u8{ 0x04, 0x7f, 0x00, 0x00, 0x01, 0x06, 0x06, 0x62 };
+    var sd_buf: [256]u8 = undefined;
+    const sd = try buildSignData(&sd_buf, &underlay, overlay, network_id, nonce, .{ .timestamp = timestamp, .chequebook = chequebook });
+    var sig: [SIGNATURE_LEN]u8 = undefined;
+    try identity.signEthereum(id.private_key, sd, &sig);
+
+    const encode = struct {
+        fn f(out: []u8, u: []const u8, s: [SIGNATURE_LEN]u8, o: [OVERLAY_LEN]u8, n: [NONCE_LEN]u8, ts: i64, cb: []const u8) ![]u8 {
+            var w = std.Io.Writer.fixed(out);
+            for ([_]struct { u64, []const u8 }{ .{ 1, u }, .{ 2, &s }, .{ 3, &o }, .{ 4, &n } }) |field| {
+                try proto.writeVarint(&w, (field[0] << 3) | 2);
+                try proto.writeVarint(&w, field[1].len);
+                try w.writeAll(field[1]);
+            }
+            try proto.writeVarint(&w, (5 << 3) | 0);
+            try proto.writeVarint(&w, @intCast(ts));
+            try proto.writeVarint(&w, (6 << 3) | 2);
+            try proto.writeVarint(&w, cb.len);
+            try w.writeAll(cb);
+            return w.buffered();
+        }
+    }.f;
+
+    var enc_buf: [512]u8 = undefined;
+    const good = try encode(&enc_buf, &underlay, sig, overlay, nonce, timestamp, &chequebook);
+    const v = try parse(testing.allocator, good, network_id, null);
+    defer v.deinit();
+    try testing.expectEqualSlices(u8, &overlay, &v.overlay);
+
+    // A relayer swapping the chequebook must break verification.
+    const tampered: [CHEQUEBOOK_LEN]u8 = [_]u8{0x22} ** CHEQUEBOOK_LEN;
+    const bad = try encode(&enc_buf, &underlay, sig, overlay, nonce, timestamp, &tampered);
+    try testing.expect(std.meta.isError(parse(testing.allocator, bad, network_id, null)));
 }

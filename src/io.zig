@@ -46,6 +46,13 @@ pub fn sleepNs(ns: u64) void {
     get().sleep(std.Io.Duration.fromNanoseconds(ns), .awake) catch {};
 }
 
+/// Wall-clock seconds since the Unix epoch. Replaces 0.15's
+/// `std.time.timestamp`. Only for values peers compare against their own
+/// clocks (e.g. the bzz address timestamp); use `nowNs` for intervals.
+pub fn unixSeconds() i64 {
+    return std.Io.Timestamp.now(get(), .real).toSeconds();
+}
+
 /// Monotonic timestamp in nanoseconds. Replaces 0.15's `std.time.nanoTimestamp`,
 /// removed in 0.16. Uses the monotonic (`.awake`) clock — correct for interval
 /// timing (round-trips, manage-tick deltas).

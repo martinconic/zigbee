@@ -41,9 +41,17 @@ pub const TcpStream = struct {
 
     /// Reads up to `dst.len` bytes; returns the count read, or 0 at end of
     /// stream — matching the old `std.net.Stream.read` contract the protocol
-    /// code relies on.
+    /// code relies on. One socket read per call: `readSliceShort` would loop
+    /// until `dst` is full or EOF, which blocks e.g. the HTTP API forever on
+    /// a request shorter than its read buffer. With the unbuffered reader,
+    /// `readVec` is a single `netRead` and never returns 0 short of EOF.
     pub fn read(self: *TcpStream, dst: []u8) !usize {
-        return self.reader.interface.readSliceShort(dst);
+        if (dst.len == 0) return 0;
+        var data = [_][]u8{dst};
+        return self.reader.interface.readVec(&data) catch |e| switch (e) {
+            error.EndOfStream => 0,
+            else => e,
+        };
     }
 
     pub fn writeAll(self: *TcpStream, bytes: []const u8) !void {

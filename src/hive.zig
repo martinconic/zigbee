@@ -1,4 +1,4 @@
-// `/swarm/hive/1.1.0/peers` — peer-discovery responder.
+// `/swarm/hive/{1.1.0,2.0.0}/peers` — peer-discovery responder.
 //
 // Wire flow:
 //   1. Bee writes Headers { headers: [] }.
@@ -6,7 +6,9 @@
 //   3. Bee writes Peers { peers: [BzzAddress, …] }.
 //   4. Stream closes.
 //
-// Each `BzzAddress` is `{ underlay, signature, overlay, nonce }`. We
+// Each `BzzAddress` is `{ underlay, signature, overlay, nonce }`, plus
+// `{ timestamp, chequebook }` in 2.0.0 (bee >= 2.8.0) — the entry format is
+// otherwise identical, so one responder serves both versions. We
 // validate the signature, derive the Ethereum address, and persist the
 // entry in the caller-supplied PeerTable. Invalid entries are logged and
 // skipped (one bad entry doesn't reject the whole batch).
@@ -19,7 +21,8 @@ const bzz_address = @import("bzz_address.zig");
 const peer_table = @import("peer_table.zig");
 const multiaddr = @import("multiaddr.zig");
 
-pub const PROTOCOL_ID = "/swarm/hive/1.1.0/peers";
+pub const PROTOCOL_ID_V1 = "/swarm/hive/1.1.0/peers";
+pub const PROTOCOL_ID_V2 = "/swarm/hive/2.0.0/peers";
 
 pub fn respond(
     allocator: std.mem.Allocator,

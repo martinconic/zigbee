@@ -1,23 +1,24 @@
-// Swarm Bee application-level handshake — `/swarm/handshake/14.0.0/handshake`.
+// Swarm Bee application-level handshake — `/swarm/handshake/{14,15}.0.0/handshake`.
 //
 // Wire flow when bee opens this stream against us (we're responder):
 //   bee → us:  Syn { observed_underlay: bytes }
 //   us  → bee: SynAck { syn: Syn(our view), ack: Ack(our bzz address) }
-//   bee → us:  Ack { address: BzzAddress, network_id, full_node, nonce, welcome_message }
+//   bee → us:  Ack { address: BzzAddress, network_id, full_node, welcome_message }
 //
 // Each message is varint-length-prefixed protobuf.
 //
-// BzzAddress = { underlay: bytes, signature: bytes, overlay: bytes }
-//   - underlay: serialized list of multiaddrs (single-multiaddr legacy form,
-//     or 0x99-prefixed varint-length list).
-//   - overlay: 32-byte swarm address (= keccak256(eth_addr ‖ networkID_LE_u64
-//     ‖ nonce_32)).
-//   - signature: 65-byte r||s||v Ethereum-style signature over
-//        sign_data = "bee-handshake-" || underlay || overlay || networkID_BE_u64
-//     hashed with EIP-191 + Keccak-256, signed with secp256k1.
+// Two versions, picked per peer from its Identify protocol list:
+//   - 14.0.0 (bee < 2.8.0): BzzAddress = { underlay, signature, overlay };
+//     the nonce travels in `Ack.Nonce` (field 4).
+//   - 15.0.0 (bee >= 2.8.0): `Ack.Nonce` is gone; BzzAddress carries
+//     { underlay, signature, overlay, nonce, timestamp, chequebook } and the
+//     signature covers the three new fields. See bzz_address.zig for the
+//     exact sign_data of each.
 //
 // Bee verifies our signature by recovering our public key, deriving the
-// overlay from it, and checking it equals our advertised overlay.
+// overlay from it, and checking it equals our advertised overlay. In 15.0.0
+// bee also demands a verified chequebook — but only from peers whose Ack
+// says `full_node`; zigbee is ultra-light, so it advertises none.
 
 const std = @import("std");
 const proto = @import("proto.zig");
@@ -28,9 +29,24 @@ const peer_id = @import("peer_id.zig");
 const multiaddr = @import("multiaddr.zig");
 const bzz_address = @import("bzz_address.zig");
 
-pub const PROTOCOL_ID = "/swarm/handshake/14.0.0/handshake";
+pub const PROTOCOL_ID_V14 = "/swarm/handshake/14.0.0/handshake";
+pub const PROTOCOL_ID_V15 = "/swarm/handshake/15.0.0/handshake";
 pub const WELCOME_MESSAGE = "zigbee says hello";
 pub const MAX_MSG_SIZE: usize = 128 * 1024;
+
+pub const Version = enum {
+    /// bee < 2.8.0.
+    v14,
+    /// bee >= 2.8.0.
+    v15,
+
+    pub fn protocolId(v: Version) []const u8 {
+        return switch (v) {
+            .v14 => PROTOCOL_ID_V14,
+            .v15 => PROTOCOL_ID_V15,
+        };
+    }
+};
 
 pub const Error = error{
     InvalidSyn,
@@ -85,6 +101,7 @@ fn underlayCount(buf: []const u8) usize {
 /// Configuration passed in by the caller — everything zigbee can't infer
 /// from the connection itself.
 pub const Config = struct {
+    version: Version,
     network_id: u64,
     full_node: bool,
     /// 32-byte nonce that, together with our identity's Ethereum address and
@@ -92,9 +109,12 @@ pub const Config = struct {
     nonce: [32]u8,
     /// Our advertised underlays as multiaddr binary blobs (each one a
     /// /ip4/.../tcp/.../p2p/<peer-id> or similar). Bee accepts any list ≥1
-    /// as long as the signature checks out and (if validateOverlay is on)
-    /// the overlay matches.
+    /// as long as the signature checks out and the overlay matches.
     underlays: []const []const u8,
+    /// Unix seconds stamped into (and signed with) our BzzAddress. v15 only;
+    /// bee rejects 0, values > its clock + 60 s, and values older than the
+    /// last one it stored for us.
+    timestamp: i64 = 0,
     welcome_message: []const u8 = WELCOME_MESSAGE,
 };
 
@@ -114,8 +134,81 @@ pub const PeerInfo = struct {
     }
 };
 
+/// Our signed BzzAddress, ready to encode. `underlay` borrows from the
+/// buffer passed to `signOurAddress`.
+const OurAddress = struct {
+    underlay: []const u8,
+    overlay: [32]u8,
+    signature: [65]u8,
+    nonce: [32]u8,
+    timestamp: i64,
+};
+
+fn signOurAddress(underlay_buf: []u8, id: *const identity.Identity, cfg: Config) !OurAddress {
+    var overlay: [32]u8 = undefined;
+    id.overlayAddress(cfg.network_id, cfg.nonce, &overlay);
+    const underlay = try serializeUnderlays(underlay_buf, cfg.underlays);
+
+    // No chequebook: the V15 default (20 zero bytes) is what bee signs for
+    // an absent one.
+    const v15: ?bzz_address.V15 = switch (cfg.version) {
+        .v14 => null,
+        .v15 => .{ .timestamp = cfg.timestamp },
+    };
+    var sd_buf: [8192]u8 = undefined;
+    const sd = try bzz_address.buildSignData(&sd_buf, underlay, overlay, cfg.network_id, cfg.nonce, v15);
+    var sig: [65]u8 = undefined;
+    try identity.signEthereum(id.private_key, sd, &sig);
+
+    return .{
+        .underlay = underlay,
+        .overlay = overlay,
+        .signature = sig,
+        .nonce = cfg.nonce,
+        .timestamp = cfg.timestamp,
+    };
+}
+
+/// Structural checks + signature verification of the peer's Ack. Returns
+/// the peer's overlay and recovered Ethereum address.
+fn verifyPeerAck(version: Version, ack: ParsedAck) !struct { overlay: [32]u8, eth_address: [20]u8 } {
+    const a = ack.address;
+    if (a.overlay.len != 32) return Error.InvalidAck;
+    if (underlayCount(a.underlay) == 0) return Error.InvalidAck;
+    if (a.signature.len != 65) return Error.InvalidAck;
+
+    const nonce_bytes = switch (version) {
+        .v14 => ack.nonce,
+        .v15 => a.nonce,
+    };
+    if (nonce_bytes.len != 32) return Error.InvalidAck;
+
+    const v15: ?bzz_address.V15 = switch (version) {
+        .v14 => null,
+        .v15 => blk: {
+            if (a.timestamp <= 0) return Error.InvalidAck;
+            break :blk .{
+                .timestamp = a.timestamp,
+                .chequebook = bzz_address.chequebookFromWire(a.chequebook) catch return Error.InvalidAck,
+            };
+        },
+    };
+
+    const overlay = a.overlay[0..32].*;
+    const verified = bzz_address.verify(
+        a.underlay,
+        overlay,
+        a.signature[0..65].*,
+        nonce_bytes[0..32].*,
+        ack.network_id,
+        v15,
+    ) catch return Error.InvalidAck;
+    return .{ .overlay = overlay, .eth_address = verified.eth_address };
+}
+
 /// Initiator side: we open the stream, send Syn → read SynAck → send Ack.
-/// Caller must have already done multistream-select for PROTOCOL_ID.
+/// Caller must have already done multistream-select for
+/// `cfg.version.protocolId()`.
 ///   - `peer_observed_underlay`: a multiaddr binary containing /p2p/<peer-id>
 ///     of the responder. Bee uses this to figure out its own observed
 ///     address; the spec also requires it to embed bee's PeerID.
@@ -131,53 +224,24 @@ pub fn initiate(
     const syn_payload = try encodeSyn(&syn_payload_buf, peer_observed_underlay);
     try writeDelimited(stream, syn_payload);
 
-    // 2. Read SynAck { syn, ack }
+    // 2. Read SynAck { syn, ack } and verify the peer's BzzAddress.
     const synack_buf = try readDelimited(allocator, stream);
     defer allocator.free(synack_buf);
     const parsed = try parseSynAck(synack_buf);
     if (parsed.ack.network_id != cfg.network_id) return Error.NetworkIdMismatch;
-    if (parsed.ack.address.overlay.len != 32) return Error.InvalidAck;
-    if (underlayCount(parsed.ack.address.underlay) == 0) return Error.InvalidAck;
-    if (parsed.ack.address.signature.len != 65) return Error.InvalidAck;
-    if (parsed.ack.nonce.len != 32) return Error.InvalidAck;
-
-    // Verify peer's BzzAddress (delegates signature recovery + overlay
-    // derivation to the shared bzz_address module).
-    const peer_overlay32 = parsed.ack.address.overlay[0..32].*;
-    var peer_sig: [65]u8 = undefined;
-    @memcpy(&peer_sig, parsed.ack.address.signature[0..65]);
-    var peer_nonce32: [32]u8 = undefined;
-    @memcpy(&peer_nonce32, parsed.ack.nonce[0..32]);
-    const verified = bzz_address.verify(
-        parsed.ack.address.underlay,
-        peer_overlay32,
-        peer_sig,
-        peer_nonce32,
-        parsed.ack.network_id,
-    ) catch return Error.InvalidAck;
-    const peer_eth = verified.eth_address;
+    const peer = try verifyPeerAck(cfg.version, parsed.ack);
 
     // 3. Build and send our Ack.
-    var our_overlay: [32]u8 = undefined;
-    id.overlayAddress(cfg.network_id, cfg.nonce, &our_overlay);
-
     var our_underlay_buf: [4096]u8 = undefined;
-    const our_underlay = try serializeUnderlays(&our_underlay_buf, cfg.underlays);
-
-    var our_sd_buf: [8192]u8 = undefined;
-    const our_sd = try bzz_address.buildSignData(&our_sd_buf, our_underlay, our_overlay, cfg.network_id);
-    var our_sig: [65]u8 = undefined;
-    try identity.signEthereum(id.private_key, our_sd, &our_sig);
+    const ours = try signOurAddress(&our_underlay_buf, id, cfg);
 
     var ack_payload_buf: [8192]u8 = undefined;
     const ack_payload = try encodeAck(
         &ack_payload_buf,
-        our_underlay,
-        our_overlay,
-        our_sig,
+        cfg.version,
+        ours,
         cfg.network_id,
         cfg.full_node,
-        cfg.nonce,
         cfg.welcome_message,
     );
     try writeDelimited(stream, ack_payload);
@@ -187,11 +251,11 @@ pub fn initiate(
     @memcpy(owned, parsed.ack.welcome_message);
 
     return PeerInfo{
-        .overlay = peer_overlay32,
+        .overlay = peer.overlay,
         .network_id = parsed.ack.network_id,
         .full_node = parsed.ack.full_node,
         .welcome_message = owned,
-        .eth_address = peer_eth,
+        .eth_address = peer.eth_address,
         ._allocator = allocator,
         ._buffer = owned,
     };
@@ -213,20 +277,8 @@ pub fn respond(
     _ = try parseSyn(syn_buf);
 
     // 3. Build and send SynAck.
-    const overlay = cfg_overlay: {
-        var ov: [32]u8 = undefined;
-        id.overlayAddress(cfg.network_id, cfg.nonce, &ov);
-        break :cfg_overlay ov;
-    };
-
     var underlays_buf: [4096]u8 = undefined;
-    const our_underlay = try serializeUnderlays(&underlays_buf, cfg.underlays);
-
-    var sign_data_buf: [8192]u8 = undefined;
-    const sign_data = try bzz_address.buildSignData(&sign_data_buf, our_underlay, overlay, cfg.network_id);
-
-    var sig: [65]u8 = undefined;
-    try identity.signEthereum(id.private_key, sign_data, &sig);
+    const ours = try signOurAddress(&underlays_buf, id, cfg);
 
     var synack_payload_buf: [8192]u8 = undefined;
     const synack_payload = try encodeSynAck(
@@ -234,13 +286,10 @@ pub fn respond(
         // syn.observed_underlay: send empty for now; bee's responder doesn't
         // verify this against its own peer ID.
         &[_]u8{},
-        // ack:
-        our_underlay,
-        overlay,
-        sig,
+        cfg.version,
+        ours,
         cfg.network_id,
         cfg.full_node,
-        cfg.nonce,
         cfg.welcome_message,
     );
 
@@ -249,49 +298,16 @@ pub fn respond(
     // 4. Read peer's Ack and verify.
     const ack_buf = try readDelimited(allocator, stream);
     errdefer allocator.free(ack_buf);
-    var parsed = try parseAck(ack_buf);
-
-    if (parsed.network_id != cfg.network_id) {
-        allocator.free(ack_buf);
-        return Error.NetworkIdMismatch;
-    }
-    if (parsed.address.overlay.len != 32) {
-        allocator.free(ack_buf);
-        return Error.InvalidAck;
-    }
-    if (underlayCount(parsed.address.underlay) == 0) {
-        allocator.free(ack_buf);
-        return Error.InvalidAck;
-    }
-
-    // Recover the peer's pubkey and check it derives the advertised overlay.
-    if (parsed.address.signature.len != 65 or parsed.nonce.len != 32) {
-        allocator.free(ack_buf);
-        return Error.InvalidAck;
-    }
-    const peer_overlay32 = parsed.address.overlay[0..32].*;
-    var peer_sig: [65]u8 = undefined;
-    @memcpy(&peer_sig, parsed.address.signature[0..65]);
-    var nonce32: [32]u8 = undefined;
-    @memcpy(&nonce32, parsed.nonce[0..32]);
-    const verified = bzz_address.verify(
-        parsed.address.underlay,
-        peer_overlay32,
-        peer_sig,
-        nonce32,
-        parsed.network_id,
-    ) catch {
-        allocator.free(ack_buf);
-        return Error.InvalidAck;
-    };
-    const peer_eth = verified.eth_address;
+    const parsed = try parseAck(ack_buf);
+    if (parsed.network_id != cfg.network_id) return Error.NetworkIdMismatch;
+    const peer = try verifyPeerAck(cfg.version, parsed);
 
     return PeerInfo{
-        .overlay = peer_overlay32,
+        .overlay = peer.overlay,
         .network_id = parsed.network_id,
         .full_node = parsed.full_node,
         .welcome_message = parsed.welcome_message,
-        .eth_address = peer_eth,
+        .eth_address = peer.eth_address,
         ._allocator = allocator,
         ._buffer = ack_buf,
     };
@@ -303,18 +319,14 @@ const ParsedSyn = struct {
     observed_underlay: []const u8,
 };
 
-const ParsedBzzAddress = struct {
-    underlay: []const u8,
-    signature: []const u8,
-    overlay: []const u8,
-};
-
 const ParsedAck = struct {
-    address: ParsedBzzAddress,
+    address: bzz_address.Parsed = .{},
     network_id: u64 = 0,
     full_node: bool = false,
-    nonce: []const u8,
-    welcome_message: []const u8,
+    /// Legacy (14.0.0) field 4; empty under 15.0.0, where the nonce lives
+    /// in `address.nonce`.
+    nonce: []const u8 = &[_]u8{},
+    welcome_message: []const u8 = &[_]u8{},
 };
 
 const ParsedSynAck = struct {
@@ -325,11 +337,7 @@ const ParsedSynAck = struct {
 fn parseSynAck(buf: []const u8) !ParsedSynAck {
     var out = ParsedSynAck{
         .syn = .{ .observed_underlay = &[_]u8{} },
-        .ack = .{
-            .address = .{ .underlay = &[_]u8{}, .signature = &[_]u8{}, .overlay = &[_]u8{} },
-            .nonce = &[_]u8{},
-            .welcome_message = &[_]u8{},
-        },
+        .ack = .{},
     };
     var off: usize = 0;
     while (off < buf.len) {
@@ -372,36 +380,8 @@ fn parseSyn(buf: []const u8) !ParsedSyn {
     return .{ .observed_underlay = observed };
 }
 
-fn parseBzzAddress(buf: []const u8) !ParsedBzzAddress {
-    var addr = ParsedBzzAddress{ .underlay = &[_]u8{}, .signature = &[_]u8{}, .overlay = &[_]u8{} };
-    var off: usize = 0;
-    while (off < buf.len) {
-        const tag = try proto.readVarint(buf[off..]);
-        off += tag.bytes_read;
-        const wt = tag.value & 0x07;
-        const fnum = tag.value >> 3;
-        if (wt != 2) return Error.InvalidAck;
-        const len_res = try proto.readVarint(buf[off..]);
-        off += len_res.bytes_read;
-        const ulen: usize = @intCast(len_res.value);
-        if (off + ulen > buf.len) return Error.InvalidAck;
-        switch (fnum) {
-            1 => addr.underlay = buf[off .. off + ulen],
-            2 => addr.signature = buf[off .. off + ulen],
-            3 => addr.overlay = buf[off .. off + ulen],
-            else => {},
-        }
-        off += ulen;
-    }
-    return addr;
-}
-
 fn parseAck(buf: []const u8) !ParsedAck {
-    var ack = ParsedAck{
-        .address = .{ .underlay = &[_]u8{}, .signature = &[_]u8{}, .overlay = &[_]u8{} },
-        .nonce = &[_]u8{},
-        .welcome_message = &[_]u8{},
-    };
+    var ack = ParsedAck{};
     var off: usize = 0;
     while (off < buf.len) {
         const tag = try proto.readVarint(buf[off..]);
@@ -426,7 +406,7 @@ fn parseAck(buf: []const u8) !ParsedAck {
                 const data = buf[off .. off + ulen];
                 off += ulen;
                 switch (fnum) {
-                    1 => ack.address = try parseBzzAddress(data),
+                    1 => ack.address = bzz_address.decode(data) catch return Error.InvalidAck,
                     4 => ack.nonce = data,
                     99 => ack.welcome_message = data,
                     else => {},
@@ -443,12 +423,10 @@ fn parseAck(buf: []const u8) !ParsedAck {
 fn encodeSynAck(
     out: []u8,
     syn_observed_underlay: []const u8,
-    underlay: []const u8,
-    overlay: [32]u8,
-    signature: [65]u8,
+    version: Version,
+    addr: OurAddress,
     network_id: u64,
     full_node: bool,
-    nonce: [32]u8,
     welcome_message: []const u8,
 ) ![]u8 {
     var w = std.Io.Writer.fixed(out);
@@ -462,16 +440,7 @@ fn encodeSynAck(
 
     // Field 2: ack (embedded message).
     var ack_buf: [8192]u8 = undefined;
-    const ack_bytes = try encodeAck(
-        &ack_buf,
-        underlay,
-        overlay,
-        signature,
-        network_id,
-        full_node,
-        nonce,
-        welcome_message,
-    );
+    const ack_bytes = try encodeAck(&ack_buf, version, addr, network_id, full_node, welcome_message);
     try proto.writeVarint(&w, (2 << 3) | 2);
     try proto.writeVarint(&w, ack_bytes.len);
     try w.writeAll(ack_bytes);
@@ -489,37 +458,49 @@ fn encodeSyn(out: []u8, observed_underlay: []const u8) ![]u8 {
     return w.buffered();
 }
 
-fn encodeBzzAddress(out: []u8, underlay: []const u8, overlay: [32]u8, signature: [65]u8) ![]u8 {
+fn encodeBzzAddress(out: []u8, version: Version, addr: OurAddress) ![]u8 {
     var w = std.Io.Writer.fixed(out);
     // Field 1: Underlay (bytes)
     try proto.writeVarint(&w, (1 << 3) | 2);
-    try proto.writeVarint(&w, underlay.len);
-    try w.writeAll(underlay);
+    try proto.writeVarint(&w, addr.underlay.len);
+    try w.writeAll(addr.underlay);
     // Field 2: Signature (bytes)
     try proto.writeVarint(&w, (2 << 3) | 2);
-    try proto.writeVarint(&w, signature.len);
-    try w.writeAll(&signature);
+    try proto.writeVarint(&w, addr.signature.len);
+    try w.writeAll(&addr.signature);
     // Field 3: Overlay (bytes)
     try proto.writeVarint(&w, (3 << 3) | 2);
-    try proto.writeVarint(&w, overlay.len);
-    try w.writeAll(&overlay);
+    try proto.writeVarint(&w, addr.overlay.len);
+    try w.writeAll(&addr.overlay);
+    if (version == .v15) {
+        // Field 4: Nonce (bytes)
+        try proto.writeVarint(&w, (4 << 3) | 2);
+        try proto.writeVarint(&w, addr.nonce.len);
+        try w.writeAll(&addr.nonce);
+        // Field 5: Timestamp (int64)
+        try proto.writeVarint(&w, (5 << 3) | 0);
+        try proto.writeVarint(&w, @bitCast(addr.timestamp));
+        // Field 6: ChequebookAddress — bee sends the 20 zero bytes of
+        // `common.Address{}.Bytes()` when it has none; match it.
+        try proto.writeVarint(&w, (6 << 3) | 2);
+        try proto.writeVarint(&w, bzz_address.CHEQUEBOOK_LEN);
+        try w.splatByteAll(0, bzz_address.CHEQUEBOOK_LEN);
+    }
     return w.buffered();
 }
 
 fn encodeAck(
     out: []u8,
-    underlay: []const u8,
-    overlay: [32]u8,
-    signature: [65]u8,
+    version: Version,
+    addr: OurAddress,
     network_id: u64,
     full_node: bool,
-    nonce: [32]u8,
     welcome_message: []const u8,
 ) ![]u8 {
     var w = std.Io.Writer.fixed(out);
     // Field 1: Address (BzzAddress, embedded message)
     var addr_buf: [4096]u8 = undefined;
-    const addr_bytes = try encodeBzzAddress(&addr_buf, underlay, overlay, signature);
+    const addr_bytes = try encodeBzzAddress(&addr_buf, version, addr);
     try proto.writeVarint(&w, (1 << 3) | 2);
     try proto.writeVarint(&w, addr_bytes.len);
     try w.writeAll(addr_bytes);
@@ -529,10 +510,12 @@ fn encodeAck(
     // Field 3: FullNode (bool)
     try proto.writeVarint(&w, (3 << 3) | 0);
     try proto.writeVarint(&w, if (full_node) 1 else 0);
-    // Field 4: Nonce (bytes)
-    try proto.writeVarint(&w, (4 << 3) | 2);
-    try proto.writeVarint(&w, nonce.len);
-    try w.writeAll(&nonce);
+    if (version == .v14) {
+        // Field 4: Nonce (bytes) — moved into BzzAddress in 15.0.0.
+        try proto.writeVarint(&w, (4 << 3) | 2);
+        try proto.writeVarint(&w, addr.nonce.len);
+        try w.writeAll(&addr.nonce);
+    }
     // Field 99: WelcomeMessage (string)
     if (welcome_message.len > 0) {
         try proto.writeVarint(&w, (99 << 3) | 2);
@@ -586,25 +569,65 @@ fn readDelimited(allocator: std.mem.Allocator, stream: *yamux.Stream) ![]u8 {
 // (buildSignData and BzzAddress signature-recovery tests now live in
 // bzz_address.zig, which owns those primitives.)
 
-test "encode + parse Ack round-trips" {
-    const network_id: u64 = 10;
-    const overlay: [32]u8 = [_]u8{0xAA} ** 32;
-    const sig: [65]u8 = [_]u8{0xBB} ** 65;
-    const nonce: [32]u8 = [_]u8{0xCC} ** 32;
+test "encode + parse Ack round-trips (v14 and v15)" {
     const underlay = [_]u8{ 0x04, 0x7f, 0x00, 0x00, 0x01, 0x06, 0x06, 0x62 };
+    const addr = OurAddress{
+        .underlay = &underlay,
+        .overlay = [_]u8{0xAA} ** 32,
+        .signature = [_]u8{0xBB} ** 65,
+        .nonce = [_]u8{0xCC} ** 32,
+        .timestamp = 1_790_000_000,
+    };
     const wm = "hello";
 
-    var buf: [4096]u8 = undefined;
-    const ack_bytes = try encodeAck(&buf, &underlay, overlay, sig, network_id, true, nonce, wm);
+    for ([_]Version{ .v14, .v15 }) |version| {
+        var buf: [4096]u8 = undefined;
+        const ack_bytes = try encodeAck(&buf, version, addr, 10, true, wm);
 
-    const parsed = try parseAck(ack_bytes);
-    try std.testing.expectEqual(network_id, parsed.network_id);
-    try std.testing.expect(parsed.full_node);
-    try std.testing.expectEqualSlices(u8, &underlay, parsed.address.underlay);
-    try std.testing.expectEqualSlices(u8, &overlay, parsed.address.overlay);
-    try std.testing.expectEqualSlices(u8, &sig, parsed.address.signature);
-    try std.testing.expectEqualSlices(u8, &nonce, parsed.nonce);
-    try std.testing.expectEqualSlices(u8, wm, parsed.welcome_message);
+        const parsed = try parseAck(ack_bytes);
+        try std.testing.expectEqual(@as(u64, 10), parsed.network_id);
+        try std.testing.expect(parsed.full_node);
+        try std.testing.expectEqualSlices(u8, &underlay, parsed.address.underlay);
+        try std.testing.expectEqualSlices(u8, &addr.overlay, parsed.address.overlay);
+        try std.testing.expectEqualSlices(u8, &addr.signature, parsed.address.signature);
+        try std.testing.expectEqualSlices(u8, wm, parsed.welcome_message);
+        switch (version) {
+            .v14 => {
+                try std.testing.expectEqualSlices(u8, &addr.nonce, parsed.nonce);
+                try std.testing.expectEqual(@as(usize, 0), parsed.address.nonce.len);
+            },
+            .v15 => {
+                try std.testing.expectEqual(@as(usize, 0), parsed.nonce.len);
+                try std.testing.expectEqualSlices(u8, &addr.nonce, parsed.address.nonce);
+                try std.testing.expectEqual(addr.timestamp, parsed.address.timestamp);
+                try std.testing.expectEqualSlices(u8, &([_]u8{0} ** 20), parsed.address.chequebook);
+            },
+        }
+    }
+}
+
+test "v15 handshake: our signed Ack verifies on the peer side" {
+    const id = try identity.Identity.generate();
+    const our_underlay = [_]u8{ 0x04, 0x7f, 0x00, 0x00, 0x01, 0x06, 0x06, 0x62 };
+    const underlays = [_][]const u8{&our_underlay};
+    const cfg = Config{
+        .version = .v15,
+        .network_id = 10,
+        .full_node = false,
+        .nonce = [_]u8{0x42} ** 32,
+        .underlays = &underlays,
+        .timestamp = 1_790_000_000,
+    };
+
+    var ub: [4096]u8 = undefined;
+    const ours = try signOurAddress(&ub, &id, cfg);
+    var buf: [8192]u8 = undefined;
+    const parsed = try parseAck(try encodeAck(&buf, .v15, ours, cfg.network_id, false, ""));
+    const peer = try verifyPeerAck(.v15, parsed);
+    try std.testing.expectEqualSlices(u8, &ours.overlay, &peer.overlay);
+
+    // The same bytes checked under the v14 rules must fail: no Ack.Nonce.
+    try std.testing.expectError(Error.InvalidAck, verifyPeerAck(.v14, parsed));
 }
 
 test "underlayCount handles empty, legacy single, and prefixed list" {

@@ -32,9 +32,11 @@ const tcp_mod = @import("tcp.zig");
 const SUPPORTED_PROTOCOLS = [_][]const u8{
     identify.PROTOCOL_ID,
     ping.PROTOCOL_ID,
-    bee_handshake.PROTOCOL_ID,
+    bee_handshake.PROTOCOL_ID_V15,
+    bee_handshake.PROTOCOL_ID_V14,
     pricing.PROTOCOL_ID,
-    hive.PROTOCOL_ID,
+    hive.PROTOCOL_ID_V2,
+    hive.PROTOCOL_ID_V1,
     "/yamux/1.0.0",
 };
 
@@ -813,9 +815,9 @@ fn handleInboundStream(self: *P2PNode, conn: *Connection, s: *yamux.Stream) !voi
             s.close() catch {};
             return;
         }
-        if (std.mem.eql(u8, proposal, hive.PROTOCOL_ID)) {
-            std.debug.print("[host] stream {d}: serving {s}\n", .{ s.id, hive.PROTOCOL_ID });
-            multistream.writeMessage(s, hive.PROTOCOL_ID) catch return;
+        if (std.mem.eql(u8, proposal, hive.PROTOCOL_ID_V2) or std.mem.eql(u8, proposal, hive.PROTOCOL_ID_V1)) {
+            std.debug.print("[host] stream {d}: serving {s}\n", .{ s.id, proposal });
+            multistream.writeMessage(s, proposal) catch return;
             self.peersLock();
             const before = self.peers.count();
             hive.respond(self.allocator, s, &self.peers, self.network_id) catch |e| {
